@@ -1,6 +1,7 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import VentasPage from './ventas/VentasDelDiaPage'
+import CorporativoPage from './corporativo/CorporativoPage'
 import ConfiguracionPage from './configuracion/ConfiguracionPage'
 
 function Placeholder({ title }: { title: string }) {
@@ -57,7 +58,7 @@ export default function AdminLayout() {
       <main className="flex flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<VentasPage />} />
-          <Route path="/corporativo" element={<Placeholder title="Corporativo / Vales" />} />
+          <Route path="/corporativo" element={<CorporativoPage />} />
           <Route path="/compras" element={<Placeholder title="Compras de Combustible" />} />
           <Route path="/osinergmin" element={<Placeholder title="OSINERGMIN" />} />
           <Route path="/configuracion" element={<ConfiguracionPage />} />
