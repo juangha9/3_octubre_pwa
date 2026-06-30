@@ -24,6 +24,7 @@ interface CierreRow {
   contaminacion_centimos: number
   entregado_grifero_centimos: number | null
   contabilizado_admin_centimos: number | null
+  colaborador_id: string
   vales_total_centimos: number  // suma de cierre_vales
 }
 
@@ -31,6 +32,7 @@ interface RegistroRow {
   id: string
   turno_id: number
   tipo_atencion: string
+  empresa_id: string | null
   empresa_nombre: string | null
   conductor: string | null
   placa: string | null
@@ -57,6 +59,19 @@ interface NuevoReg {
   cantidad_galones: string
 }
 
+// Para la tabla editable de turnos
+interface ShiftInputs {
+  total_consola: string
+  yape: string
+  openpay: string
+  deposito: string
+  serafinado: string
+  redondeo: string
+  entregado_grifero: string
+  contabilizado_admin: string
+  colaborador_id: string
+}
+
 // Para el historial mensual
 interface CierreRowCalculated {
   id: string
@@ -81,6 +96,19 @@ interface CierreRowCalculated {
   faltante_sobrante_centimos: number | null
 }
 
+interface EditRowState {
+  empresa_id: string
+  numero: string
+  placa: string
+  serie: string
+  conductor: string
+  dni_conductor: string
+  turno_id: string
+  tipo_combustible: string
+  cantidad_galones: string
+  importe: string
+}
+
 type Tab = 'registro' | 'historial'
 type Modo = 'abreviado' | 'completo'
 
@@ -95,23 +123,23 @@ const NUEVO_VACIO: NuevoReg = {
   placa: '',
   dni_conductor: '',
   tipo_combustible: '',
-  shadow_precio: '' as any, // temporal
   cantidad_galones: '',
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
-function calcEfectivoFinal(c: CierreRow): number {
-  const creditos =
-    c.corporacion_centimos + c.licitaciones_centimos +
-    c.particulares_centimos + c.chevron_centimos
+function calcEfectivoFinal(
+  c: CierreRow,
+  creditos: { corporacion: number; licitaciones: number; particulares: number; chevron: number }
+): number {
+  const totalCreditos = creditos.corporacion + creditos.licitaciones + creditos.particulares + creditos.chevron
   return (
     (c.total_consola_centimos ?? 0) -
     c.yape_centimos -
     c.openpay_centimos -
     c.deposito_transferencia_centimos -
     c.vales_total_centimos -
-    creditos -
+    totalCreditos -
     c.serafinado_centimos +
     c.redondeo_centimos
   )
@@ -138,10 +166,23 @@ export default function VentasPage() {
   const [confirmReinicio, setConfirmReinicio] = useState(false)
   const [nuevo, setNuevo] = useState<NuevoReg>({ ...NUEVO_VACIO })
 
+  // Inputs editables de los turnos
+  const [inputsMap, setInputsMap] = useState<Record<number, ShiftInputs>>({})
+
+  // Registro rápido de créditos (Abreviado)
+  const [quickTurno, setQuickTurno] = useState('1')
+  const [quickMonto, setQuickMonto] = useState('')
+  const [savingQuick, setSavingQuick] = useState(false)
+
+  // Edición en línea para registros (Completo)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState<EditRowState | null>(null)
+
   // Catálogos de referencia
   const [turnos, setTurnos] = useState<Turno[]>([])
   const [empresas, setEmpresas] = useState<EmpresaCliente[]>([])
   const [combustibles, setCombustibles] = useState<TipoCombustible[]>([])
+  const [colaboradores, setColaboradores] = useState<{ id: string; nombre: string }[]>([])
 
   // ─── ESTADO: HISTORIAL MENSUAL ──────────────────────────────────
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -159,11 +200,13 @@ export default function VentasPage() {
       supabase.from('turnos').select('*').eq('activo', true).order('id'),
       supabase.from('empresas_clientes').select('*').eq('activo', true).order('nombre'),
       supabase.from('tipos_combustible').select('*').eq('activo', true).order('nombre'),
-    ]).then(([t, e, c]) => {
+      supabase.from('profiles').select('id, nombre').eq('activo', true).order('nombre'),
+    ]).then(([t, e, c, p]) => {
       const ts = t.data ?? []
       setTurnos(ts)
       setEmpresas(e.data ?? [])
       setCombustibles(c.data ?? [])
+      setColaboradores(p.data ?? [])
       if (ts.length > 0) {
         setNuevo(prev => ({ ...prev, turno_id: String(ts[0].id) }))
       }
@@ -180,7 +223,8 @@ export default function VentasPage() {
           'id, turno_id, total_consola_centimos, yape_centimos, openpay_centimos, ' +
           'deposito_transferencia_centimos, corporacion_centimos, licitaciones_centimos, ' +
           'particulares_centimos, chevron_centimos, serafinado_centimos, redondeo_centimos, ' +
-          'cierre_vales(monto_centimos)'
+          'contaminacion_centimos, entregado_grifero_centimos, contabilizado_admin_centimos, ' +
+          'colaborador_id, cierre_vales(monto_centimos)'
         )
         .eq('fecha', fecha),
       supabase.from('precios_diarios').select('*').eq('fecha', fecha).maybeSingle(),
@@ -197,7 +241,8 @@ export default function VentasPage() {
 
     // Armar mapa turno_id → CierreRow
     const map: Record<number, CierreRow> = {}
-    for (const raw of (cierresRes.data ?? [])) {
+    const dbCierres = cierresRes.data ?? []
+    for (const raw of dbCierres) {
       const vales = (raw.cierre_vales as { monto_centimos: number }[]) ?? []
       const { cierre_vales: _cv, ...rest } = raw as any
       map[raw.turno_id] = {
@@ -206,6 +251,26 @@ export default function VentasPage() {
       }
     }
     setCierresMap(map)
+
+    // Inicializar inputs editables locales
+    const newInputsMap: Record<number, ShiftInputs> = {}
+    // Usar turnos cargados o los de la base de datos
+    const activeTurnos = turnos.length > 0 ? turnos : [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] as any[]
+    for (const t of activeTurnos) {
+      const c = map[t.id]
+      newInputsMap[t.id] = {
+        total_consola: c?.total_consola_centimos != null ? (c.total_consola_centimos / 100).toFixed(2) : '',
+        yape: c ? (c.yape_centimos / 100).toFixed(2) : '0.00',
+        openpay: c ? (c.openpay_centimos / 100).toFixed(2) : '0.00',
+        deposito: c ? (c.deposito_transferencia_centimos / 100).toFixed(2) : '0.00',
+        serafinado: c ? (c.serafinado_centimos / 100).toFixed(2) : '0.00',
+        redondeo: c ? (c.redondeo_centimos / 100).toFixed(2) : '0.00',
+        entregado_grifero: c?.entregado_grifero_centimos != null ? (c.entregado_grifero_centimos / 100).toFixed(2) : '',
+        contabilizado_admin: c?.contabilizado_admin_centimos != null ? (c.contabilizado_admin_centimos / 100).toFixed(2) : '',
+        colaborador_id: c?.colaborador_id ?? '',
+      }
+    }
+    setInputsMap(newInputsMap)
 
     // Precios del día
     const pd = preciosRes.data
@@ -229,7 +294,7 @@ export default function VentasPage() {
       })) as any
     )
     setLoadingDia(false)
-  }, [fecha])
+  }, [fecha, turnos])
 
   useEffect(() => {
     if (activeTab === 'registro') {
@@ -375,41 +440,205 @@ export default function VentasPage() {
     return 0
   }
 
-  // ── Guardar nuevo registro de venta corporativa ───────────────
+  // ── Guardar Cambios en la Tabla de Turnos (Control de Ventas) ──
+  const handleShiftInputChange = (turnoId: number, field: keyof ShiftInputs, val: string) => {
+    setInputsMap(prev => ({
+      ...prev,
+      [turnoId]: {
+        ...prev[turnoId],
+        [field]: val
+      }
+    }))
+  }
+
+  const handleShiftInputBlur = async (turnoId: number, changedField?: keyof ShiftInputs) => {
+    const inputs = inputsMap[turnoId]
+    if (!inputs) return
+
+    const totalConsola = inputs.total_consola === '' ? null : toCentimos(inputs.total_consola)
+    const yape = toCentimos(inputs.yape)
+    const openpay = toCentimos(inputs.openpay)
+    const deposito = toCentimos(inputs.deposito)
+    const serafinado = toCentimos(inputs.serafinado)
+    const redondeo = toCentimos(inputs.redondeo)
+    const entregado = inputs.entregado_grifero === '' ? null : toCentimos(inputs.entregado_grifero)
+    const contabilizado = inputs.contabilizado_admin === '' ? null : toCentimos(inputs.contabilizado_admin)
+    
+    // Asignar colaborador por defecto si está vacío
+    let colaboradorId = inputs.colaborador_id
+    if (!colaboradorId && colaboradores.length > 0) {
+      colaboradorId = colaboradores[0].id
+    }
+    if (!colaboradorId && profile) {
+      colaboradorId = profile.id
+    }
+
+    if (!colaboradorId) return
+
+    const payload = {
+      fecha,
+      turno_id: turnoId,
+      colaborador_id: colaboradorId,
+      total_consola_centimos: totalConsola,
+      yape_centimos: yape,
+      openpay_centimos: openpay,
+      deposito_transferencia_centimos: deposito,
+      serafinado_centimos: serafinado,
+      redondeo_centimos: redondeo,
+      entregado_grifero_centimos: entregado,
+      contabilizado_admin_centimos: contabilizado,
+    }
+
+    const existingCierre = cierresMap[turnoId]
+    try {
+      if (existingCierre) {
+        await supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id)
+      } else {
+        await supabase.from('cierres_caja').insert(payload)
+      }
+      loadDia()
+    } catch (err) {
+      console.error('Error al guardar turno:', err)
+    }
+  }
+
+  // ── Guardar nuevo registro de venta corporativa (Completo) ────
   async function saveRegistro() {
     const galones = parseFloat(nuevo.cantidad_galones)
     if (!nuevo.tipo_combustible || !(galones > 0) || !profile) return
     setSavingReg(true)
     const precioUnit = precioDiario(nuevo.tipo_combustible)
-    await supabase.from('registro_ventas').insert({
-      fecha,
-      turno_id: parseInt(nuevo.turno_id),
-      colaborador_id: profile.id,
-      empresa_id: nuevo.empresa_id || null,
-      tipo_atencion: nuevo.tipo_atencion,
-      tipo_documento: nuevo.tipo_documento,
-      serie: nuevo.serie || null,
-      numero: nuevo.numero || null,
-      conductor: nuevo.conductor || null,
-      placa: nuevo.placa || null,
-      dni_conductor: nuevo.dni_conductor || null,
-      tipo_combustible: nuevo.tipo_combustible,
-      parent_cierre_id: null,
-      cantidad_galones: galones,
-      precio_unit_centimos: precioUnit,
-      importe_centimos: Math.round(galones * precioUnit),
-    })
-    setNuevo(p => ({
-      ...NUEVO_VACIO,
-      turno_id: p.turno_id,
-      tipo_atencion: p.tipo_atencion,
-      tipo_combustible: p.tipo_combustible,
-    }))
-    setSavingReg(false)
-    loadDia()
+
+    try {
+      const { error } = await supabase.from('registro_ventas').insert({
+        fecha,
+        turno_id: parseInt(nuevo.turno_id),
+        colaborador_id: profile.id,
+        empresa_id: nuevo.empresa_id || null,
+        tipo_atencion: nuevo.tipo_atencion,
+        tipo_documento: nuevo.tipo_documento,
+        serie: nuevo.serie || null,
+        numero: nuevo.numero || null,
+        conductor: nuevo.conductor || null,
+        placa: nuevo.placa || null,
+        dni_conductor: nuevo.dni_conductor || null,
+        tipo_combustible: nuevo.tipo_combustible,
+        cantidad_galones: galones,
+        precio_unit_centimos: precioUnit,
+        importe_centimos: Math.round(galones * precioUnit),
+      })
+      if (error) throw error
+
+      setNuevo(p => ({
+        ...NUEVO_VACIO,
+        turno_id: p.turno_id,
+        tipo_atencion: p.tipo_atencion,
+        tipo_combustible: p.tipo_combustible,
+      }))
+      loadDia()
+    } catch (err) {
+      alert('Error al agregar el registro de venta: ' + (err as any).message)
+    } finally {
+      setSavingReg(false)
+    }
   }
 
-  // ── Borrar registro corporativo ──────────────────────────────
+  // ── Registro Rápido de Créditos (Abreviado) ───────────────────
+  async function handleQuickRegister() {
+    const monto = parseFloat(quickMonto)
+    if (!(monto > 0) || !profile) return
+    setSavingQuick(true)
+
+    try {
+      // Registrar un crédito rápido de tipo 'particular'
+      const { error } = await supabase.from('registro_ventas').insert({
+        fecha,
+        turno_id: parseInt(quickTurno),
+        colaborador_id: profile.id,
+        tipo_documento: 'vale',
+        tipo_atencion: 'particular',
+        tipo_combustible: 'REGULAR', // default
+        cantidad_galones: 0, // 0 indica registro rápido/parcial
+        precio_unit_centimos: 0,
+        importe_centimos: toCentimos(monto),
+        empresa_id: null,
+      })
+      if (error) throw error
+
+      setQuickMonto('')
+      loadDia()
+    } catch (err) {
+      alert('Error al registrar crédito rápido: ' + (err as any).message)
+    } finally {
+      setSavingQuick(false)
+    }
+  }
+
+  // ── Iniciar edición de una fila de venta (Completo) ────────────
+  const startEdit = (r: RegistroRow) => {
+    setEditingId(r.id)
+    setEditForm({
+      empresa_id: r.empresa_id ?? '',
+      numero: r.numero ?? '',
+      placa: r.placa ?? '',
+      serie: r.serie ?? '',
+      conductor: r.conductor ?? '',
+      dni_conductor: r.dni_conductor ?? '',
+      turno_id: String(r.turno_id),
+      tipo_combustible: r.tipo_combustible,
+      cantidad_galones: String(r.cantidad_galones),
+      importe: (r.importe_centimos / 100).toFixed(2),
+    })
+  }
+
+  // ── Guardar edición de una fila de venta (Completo) ────────────
+  const saveEdit = async (id: string) => {
+    if (!editForm) return
+    const galones = parseFloat(editForm.cantidad_galones) || 0
+    let precioUnit = precioDiario(editForm.tipo_combustible)
+    
+    // Si es un registro rápido modificado, recalcular importe
+    let importeCentimos = 0
+    if (galones === 0) {
+      importeCentimos = toCentimos(editForm.importe)
+      precioUnit = 0
+    } else {
+      importeCentimos = Math.round(galones * precioUnit)
+    }
+
+    const emp = empresas.find(x => x.id === editForm.empresa_id)
+    const tipoAtencion = emp ? emp.tipo : 'particular'
+
+    try {
+      const { error } = await supabase
+        .from('registro_ventas')
+        .update({
+          turno_id: parseInt(editForm.turno_id),
+          empresa_id: editForm.empresa_id || null,
+          tipo_atencion: tipoAtencion,
+          numero: editForm.numero || null,
+          placa: editForm.placa || null,
+          serie: editForm.serie || null,
+          conductor: editForm.conductor || null,
+          dni_conductor: editForm.dni_conductor || null,
+          tipo_combustible: editForm.tipo_combustible,
+          cantidad_galones: galones,
+          precio_unit_centimos: precioUnit,
+          importe_centimos: importeCentimos,
+        })
+        .eq('id', id)
+
+      if (error) throw error
+
+      setEditingId(null)
+      setEditForm(null)
+      loadDia()
+    } catch (err) {
+      alert('Error al guardar cambios: ' + (err as any).message)
+    }
+  }
+
+  // ── Borrar registro de venta ──────────────────────────────────
   async function deleteRegistro(id: string) {
     if (!confirm('¿Seguro que desea eliminar este registro?')) return
     await supabase.from('registro_ventas').delete().eq('id', id)
@@ -421,15 +650,11 @@ export default function VentasPage() {
     setConfirmReinicio(false)
     setLoadingDia(true)
     try {
-      // Borrar registros de ventas
       await supabase.from('registro_ventas').delete().eq('fecha', fecha)
-      // Borrar precios diarios
       if (precioId) {
         await supabase.from('precios_diarios').delete().eq('id', precioId)
       }
-      // Resetear cierres a borrador o borrar si aplica
       await supabase.from('cierres_caja').delete().eq('fecha', fecha)
-      
       await loadDia()
     } catch (err) {
       console.error('Error al reiniciar el día:', err)
@@ -438,7 +663,28 @@ export default function VentasPage() {
     }
   }
 
-  // ── LÓGICA DE HISTORIAL: Agrupar por fecha ────────────────────
+  // ── CÁLCULO REACTIVO: Créditos por turno (desde registros) ────
+  const creditosPorTurno = useMemo(() => {
+    const map: Record<number, { corporacion: number; licitaciones: number; particulares: number; chevron: number }> = {}
+    const activeTurnos = turnos.length > 0 ? turnos : [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] as any[]
+    for (const t of activeTurnos) {
+      const regs = registros.filter(r => r.turno_id === t.id)
+      map[t.id] = {
+        corporacion: regs.filter(r => r.tipo_atencion === 'corporativo').reduce((sum, r) => sum + r.importe_centimos, 0),
+        licitaciones: regs.filter(r => r.tipo_atencion === 'licitacion').reduce((sum, r) => sum + r.importe_centimos, 0),
+        particulares: regs.filter(r => r.tipo_atencion === 'particular').reduce((sum, r) => sum + r.importe_centimos, 0),
+        chevron: regs.filter(r => r.tipo_atencion === 'chevron').reduce((sum, r) => sum + r.importe_centimos, 0),
+      }
+    }
+    return map
+  }, [registros, turnos])
+
+  // Filtrar registros rápidos (cantidad_galones === 0) para el modo Abreviado
+  const registrosRapidos = useMemo(() => {
+    return registros.filter(r => r.cantidad_galones === 0)
+  }, [registros])
+
+  // LÓGICA DE HISTORIAL: Agrupar por fecha
   const groupedTestData = useMemo(() => {
     const groups: Record<string, CierreRowCalculated[]> = {}
     for (const c of cierresHistorial) {
@@ -487,13 +733,6 @@ export default function VentasPage() {
     }
   }, [cierresHistorial])
 
-  const renderDiferencia = (v: number | null) => {
-    if (v === null) return <td className="text-right font-mono text-xs text-app-muted">—</td>
-    if (v > 0) return <td className="text-right font-mono text-xs font-semibold text-green-600">+{formatSoles(v)}</td>
-    if (v < 0) return <td className="text-right font-mono text-xs font-semibold text-red-600">-{formatSoles(Math.abs(v))}</td>
-    return <td className="text-right font-mono text-xs text-app-muted">S/ 0.00</td>
-  }
-
   return (
     <div className="flex h-full flex-col overflow-hidden bg-slate-50">
       
@@ -528,7 +767,7 @@ export default function VentasPage() {
             </div>
           </div>
 
-          {/* Toggle Abreviado/Completo (se comparte en ambas vistas) */}
+          {/* Toggle Abreviado/Completo */}
           <div className="flex items-center gap-3">
             <div className="flex overflow-hidden rounded border border-app-border bg-white">
               {([
@@ -552,11 +791,10 @@ export default function VentasPage() {
         </div>
       </div>
 
-      {/* ── Sub-Toolbar Dinámica según Tab Activo ───────────────── */}
+      {/* ── Sub-Toolbar Dinámica ───────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3 border-b border-app-border bg-white px-4 py-2">
         {activeTab === 'registro' ? (
           <>
-            {/* Selector de Fecha */}
             <input
               type="date"
               className="input w-36 text-sm"
@@ -617,15 +855,12 @@ export default function VentasPage() {
           </>
         ) : (
           <>
-            {/* Selector de Mes */}
             <input
               type="month"
               className="input w-44 text-sm"
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(e.target.value)}
             />
-
-            {/* Botón Imprimir */}
             <button
               onClick={() => window.print()}
               className="btn bg-slate-800 text-white hover:bg-slate-700 text-xs py-1 px-3 ml-auto"
@@ -641,26 +876,26 @@ export default function VentasPage() {
         
         {/* === VISTA: REGISTRO DIARIO === */}
         {activeTab === 'registro' && (
-          <div className="space-y-4">
+          <div className="space-y-6">
             {loadingDia ? (
               <div className="flex items-center justify-center py-16">
                 <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
               </div>
             ) : (
               <>
-                {/* Tabla de Turnos (Ingresos y Cuadre) */}
+                {/* Tabla de Turnos (Totalmente Editable) */}
                 <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
                   <table className="table-excel">
                     <thead>
                       <tr>
                         <th style={{ width: 56 }}>TURNO</th>
-                        <th style={{ width: 112 }}>TOTAL CONSOLA</th>
+                        <th style={{ width: 110 }}>TOTAL CONSOLA</th>
                         <th style={{ width: 96 }}>YAPE</th>
                         <th style={{ width: 96 }}>OPEN PAY</th>
-                        <th style={{ width: 96 }}>DEPÓSITO / TRANS.</th>
-                        <th style={{ width: 108 }}>DSCTOS VALES</th>
+                        <th style={{ width: 100 }}>DEPÓSITO / TRANS.</th>
+                        <th style={{ width: 100 }}>DSCTOS VALES</th>
                         {modo === 'abreviado' ? (
-                          <th style={{ width: 118, background: '#fef9c3', color: '#854d0e' }}>TOTAL CRÉDITOS</th>
+                          <th style={{ width: 120, background: '#fef9c3', color: '#854d0e' }}>TOTAL CRÉDITOS</th>
                         ) : (
                           <>
                             <th style={{ width: 108, background: '#f1f5f9' }}>CORPORACIÓN</th>
@@ -670,72 +905,211 @@ export default function VentasPage() {
                           </>
                         )}
                         <th style={{ width: 90 }}>PRUEBA</th>
-                        <th style={{ width: 100 }}>REDONDEO</th>
+                        <th style={{ width: 90 }}>REDONDEO</th>
                         <th style={{ width: 116, background: '#dcfce7', color: '#15803d' }}>EFECTIVO FINAL</th>
+                        <th style={{ width: 120 }}>COLABORADOR</th>
                       </tr>
                     </thead>
                     <tbody>
                       {turnos.map((t, idx) => {
-                        const c = cierresMap[t.id]
-                        const creditos = c
-                          ? c.corporacion_centimos + c.licitaciones_centimos +
-                            c.particulares_centimos + c.chevron_centimos
-                          : 0
-                        const efectivo = c ? calcEfectivoFinal(c) : 0
+                        const c = cierresMap[t.id] || {
+                          id: '',
+                          turno_id: t.id,
+                          total_consola_centimos: null,
+                          yape_centimos: 0,
+                          openpay_centimos: 0,
+                          deposito_transferencia_centimos: 0,
+                          corporacion_centimos: 0,
+                          licitaciones_centimos: 0,
+                          particulares_centimos: 0,
+                          chevron_centimos: 0,
+                          serafinado_centimos: 0,
+                          redondeo_centimos: 0,
+                          contaminacion_centimos: 0,
+                          entregado_grifero_centimos: null,
+                          contabilizado_admin_centimos: null,
+                          colaborador_id: '',
+                          vales_total_centimos: 0
+                        }
+
+                        const creditos = creditosPorTurno[t.id] || { corporacion: 0, licitaciones: 0, particulares: 0, chevron: 0 }
+                        const totalCreditos = creditos.corporacion + creditos.licitaciones + creditos.particulares + creditos.chevron
+                        const efectivo = calcEfectivoFinal(c, creditos)
+
+                        const inputs = inputsMap[t.id] || {
+                          total_consola: '',
+                          yape: '0.00',
+                          openpay: '0.00',
+                          deposito: '0.00',
+                          serafinado: '0.00',
+                          redondeo: '0.00',
+                          entregado_grifero: '',
+                          contabilizado_admin: '',
+                          colaborador_id: '',
+                        }
+
+                        const inputStyle = "w-full bg-transparent border-0 px-1 py-0.5 text-right font-mono text-xs focus:ring-1 focus:ring-primary focus:bg-white"
 
                         return (
                           <tr key={t.id}>
                             <td className="text-center text-sm font-bold text-slate-800 bg-slate-50">
                               {idx + 1}
                             </td>
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.total_consola_centimos ?? 0) : ''}
+                            {/* Total Consola */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.total_consola}
+                                onChange={e => handleInputChange(t.id, 'total_consola', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'total_consola')}
+                                placeholder="0.00"
+                              />
                             </td>
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.yape_centimos) : ''}
+                            {/* Yape */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.yape}
+                                onChange={e => handleInputChange(t.id, 'yape', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'yape')}
+                              />
                             </td>
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.openpay_centimos) : ''}
+                            {/* Open Pay */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.openpay}
+                                onChange={e => handleInputChange(t.id, 'openpay', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'openpay')}
+                              />
                             </td>
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.deposito_transferencia_centimos) : ''}
+                            {/* Depósito */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.deposito}
+                                onChange={e => handleInputChange(t.id, 'deposito', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'deposito')}
+                              />
                             </td>
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.vales_total_centimos) : ''}
+                            {/* Vales (Solo Lectura, sumado de cierre_vales) */}
+                            <td className="text-right font-mono text-xs text-slate-600 bg-slate-50/50">
+                              {fs(c.vales_total_centimos)}
                             </td>
 
+                            {/* Créditos (Calculados Reactivos) */}
                             {modo === 'abreviado' ? (
                               <td
-                                className="text-right font-mono text-xs font-semibold"
+                                className="text-right font-mono text-xs font-semibold text-amber-800"
                                 style={{ background: '#fef9c3' }}
                               >
-                                {fs(creditos)}
+                                {fs(totalCreditos)}
                               </td>
                             ) : (
                               <>
                                 <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
-                                  {fs(c?.corporacion_centimos ?? 0)}
+                                  {fs(creditos.corporacion)}
                                 </td>
                                 <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
-                                  {fs(c?.licitaciones_centimos ?? 0)}
+                                  {fs(creditos.licitaciones)}
                                 </td>
                                 <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
-                                  {fs(c?.particulares_centimos ?? 0)}
+                                  {fs(creditos.particulares)}
                                 </td>
                                 <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
-                                  {fs(c?.chevron_centimos ?? 0)}
+                                  {fs(creditos.chevron)}
                                 </td>
                               </>
                             )}
 
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.serafinado_centimos) : ''}
+                            {/* Prueba (Serafinado) */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.serafinado}
+                                onChange={e => handleInputChange(t.id, 'serafinado', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'serafinado')}
+                              />
                             </td>
-                            <td className="text-right font-mono text-xs">
-                              {c ? fs(c.redondeo_centimos) : ''}
+                            {/* Redondeo */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.redondeo}
+                                onChange={e => handleInputChange(t.id, 'redondeo', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'redondeo')}
+                              />
                             </td>
+                            {/* Efectivo Final */}
                             <td className="text-right font-mono text-xs font-semibold" style={{ background: '#e8f5e9' }}>
                               {fs(efectivo)}
+                            </td>
+                            {/* Colaborador */}
+                            <td>
+                              <select
+                                className="w-full bg-transparent border-0 py-0.5 text-xs focus:ring-1 focus:ring-primary focus:bg-white"
+                                value={inputs.colaborador_id}
+                                onChange={e => {
+                                  handleInputChange(t.id, 'colaborador_id', e.target.value)
+                                  // Forzar guardado inmediato al seleccionar colaborador
+                                  setTimeout(() => {
+                                    setInputsMap(prev => {
+                                      const updated = {
+                                        ...prev,
+                                        [t.id]: { ...prev[t.id], colaborador_id: e.target.value }
+                                      }
+                                      // Llamar al guardado con la referencia actualizada
+                                      const totalConsola = updated[t.id].total_consola === '' ? null : toCentimos(updated[t.id].total_consola)
+                                      const yape = toCentimos(updated[t.id].yape)
+                                      const openpay = toCentimos(updated[t.id].openpay)
+                                      const deposito = toCentimos(updated[t.id].deposito)
+                                      const serafinado = toCentimos(updated[t.id].serafinado)
+                                      const redondeo = toCentimos(updated[t.id].redondeo)
+                                      const entregado = updated[t.id].entregado_grifero === '' ? null : toCentimos(updated[t.id].entregado_grifero)
+                                      const contabilizado = updated[t.id].contabilizado_admin === '' ? null : toCentimos(updated[t.id].contabilizado_admin)
+                                      
+                                      const payload = {
+                                        fecha,
+                                        turno_id: t.id,
+                                        colaborador_id: e.target.value,
+                                        total_consola_centimos: totalConsola,
+                                        yape_centimos: yape,
+                                        openpay_centimos: openpay,
+                                        deposito_transferencia_centimos: deposito,
+                                        serafinado_centimos: serafinado,
+                                        redondeo_centimos: redondeo,
+                                        entregado_grifero_centimos: entregado,
+                                        contabilizado_admin_centimos: contabilizado,
+                                      }
+                                      
+                                      const existingCierre = cierresMap[t.id]
+                                      if (existingCierre) {
+                                        supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id).then(() => loadDia())
+                                      } else {
+                                        supabase.from('cierres_caja').insert(payload).then(() => loadDia())
+                                      }
+                                      return updated
+                                    })
+                                  }, 0)
+                                }}
+                              >
+                                <option value="">—</option>
+                                {colaboradores.map(col => (
+                                  <option key={col.id} value={col.id}>{col.nombre}</option>
+                                ))}
+                              </select>
                             </td>
                           </tr>
                         )
@@ -744,7 +1118,95 @@ export default function VentasPage() {
                   </table>
                 </div>
 
-                {/* Registro de Vales y Transacciones Corporativas (Modo COMPLETO) */}
+                {/* === MODO ABREVIADO: Registro Rápido de Créditos === */}
+                {modo === 'abreviado' && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {/* Formulario rápido */}
+                    <div className="card space-y-4 md:col-span-1">
+                      <h3 className="text-sm font-bold text-slate-700 border-b pb-1.5">Registro Rápido de Créditos</h3>
+                      
+                      <div className="flex items-center gap-4">
+                        <div className="flex-1">
+                          <label className="block text-xs font-semibold text-slate-500 mb-1">TURNO</label>
+                          <select
+                            className="input h-9"
+                            value={quickTurno}
+                            onChange={e => setQuickTurno(e.target.value)}
+                          >
+                            {turnos.map((t, i) => (
+                              <option key={t.id} value={String(t.id)}>{i + 1}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-xs font-semibold text-slate-500 mb-1">MONTO S/.</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            placeholder="0.00"
+                            className="input h-9 font-mono"
+                            value={quickMonto}
+                            onChange={e => setQuickMonto(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && parseFloat(quickMonto) > 0 && !savingQuick) {
+                                handleQuickRegister()
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn-primary w-full h-9"
+                        disabled={!(parseFloat(quickMonto) > 0) || savingQuick}
+                        onClick={handleQuickRegister}
+                      >
+                        {savingQuick ? 'Registrando…' : 'REGISTRAR'}
+                      </button>
+                    </div>
+
+                    {/* Mini tabla de créditos rápidos */}
+                    <div className="card md:col-span-2 space-y-2">
+                      <h3 className="text-sm font-bold text-slate-700 border-b pb-1.5">Créditos Rápidos del Día</h3>
+                      <div className="max-h-48 overflow-y-auto border border-app-border rounded">
+                        <table className="table-excel">
+                          <thead>
+                            <tr>
+                              <th style={{ width: 80 }}>TURNO</th>
+                              <th>MONTO S/.</th>
+                              <th style={{ width: 100 }}>ACCIONES</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {registrosRapidos.map(r => (
+                              <tr key={r.id}>
+                                <td className="text-center text-xs font-semibold">{r.turno_id}</td>
+                                <td className="font-mono text-xs font-bold text-slate-800">{fs(r.importe_centimos)}</td>
+                                <td className="text-center">
+                                  <button
+                                    onClick={() => deleteRegistro(r.id)}
+                                    className="text-red-600 hover:text-red-800 text-xs font-semibold"
+                                  >
+                                    Eliminar
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                            {registrosRapidos.length === 0 && (
+                              <tr>
+                                <td colSpan={3} className="py-6 text-center text-xs text-app-muted italic">
+                                  No hay créditos rápidos registrados hoy
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* === MODO COMPLETO: Registro Completo de Vales y Transacciones === */}
                 {modo === 'completo' && (
                   <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
                     <table className="table-excel">
@@ -752,19 +1214,19 @@ export default function VentasPage() {
                         <tr>
                           <th style={{ width: 86 }}>FECHA</th>
                           <th style={{ width: 150 }}>CLIENTE</th>
-                          <th style={{ width: 72 }}>VALE</th>
+                          <th style={{ width: 80 }}>VALE</th>
                           <th style={{ width: 80 }}>PLACA</th>
-                          <th style={{ width: 64 }}>TICKET</th>
+                          <th style={{ width: 70 }}>TICKET</th>
                           <th style={{ width: 120 }}>CONDUCTOR</th>
                           <th style={{ width: 84 }}>DNI</th>
                           <th style={{ width: 58 }}>TURNO</th>
                           <th style={{ width: 82 }}>PRODUCTO</th>
-                          <th style={{ width: 76 }}>GALONES</th>
+                          <th style={{ width: 80 }}>GALONES</th>
                           <th style={{ width: 108 }}>PRECIO TOTAL</th>
                           <th style={{ width: 100, background: '#fff7ed', color: '#ea580c' }}>
                             VARIACIÓN
                           </th>
-                          <th style={{ width: 50 }}>ACCIONES</th>
+                          <th style={{ width: 110 }}>ACCIONES</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -891,8 +1353,139 @@ export default function VentasPage() {
 
                         {/* Registros guardados */}
                         {registros.map(r => {
+                          const isEditing = editingId === r.id
                           const precioRef = precioDiario(r.tipo_combustible)
                           const variacion = Math.round((precioRef - r.precio_unit_centimos) * r.cantidad_galones)
+
+                          if (isEditing && editForm) {
+                            return (
+                              <tr key={r.id} className="bg-amber-50">
+                                <td className="text-xs text-amber-800 font-semibold">{fecha}</td>
+                                {/* Cliente */}
+                                <td>
+                                  <select
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.empresa_id}
+                                    onChange={e => setEditForm({ ...editForm, empresa_id: e.target.value })}
+                                  >
+                                    <option value="">Buscar…</option>
+                                    {empresas.map(emp => (
+                                      <option key={emp.id} value={emp.id}>{emp.nombre}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                                {/* Vale/Número */}
+                                <td>
+                                  <input
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.numero}
+                                    onChange={e => setEditForm({ ...editForm, numero: e.target.value })}
+                                  />
+                                </td>
+                                {/* Placa */}
+                                <td>
+                                  <input
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.placa}
+                                    onChange={e => setEditForm({ ...editForm, placa: e.target.value })}
+                                    style={{ textTransform: 'uppercase' }}
+                                  />
+                                </td>
+                                {/* Serie */}
+                                <td>
+                                  <input
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.serie}
+                                    onChange={e => setEditForm({ ...editForm, serie: e.target.value })}
+                                  />
+                                </td>
+                                {/* Conductor */}
+                                <td>
+                                  <input
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.conductor}
+                                    onChange={e => setEditForm({ ...editForm, conductor: e.target.value })}
+                                  />
+                                </td>
+                                {/* DNI */}
+                                <td>
+                                  <input
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.dni_conductor}
+                                    onChange={e => setEditForm({ ...editForm, dni_conductor: e.target.value })}
+                                    maxLength={8}
+                                  />
+                                </td>
+                                {/* Turno */}
+                                <td>
+                                  <select
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.turno_id}
+                                    onChange={e => setEditForm({ ...editForm, turno_id: e.target.value })}
+                                  >
+                                    {turnos.map((t, i) => (
+                                      <option key={t.id} value={String(t.id)}>{i + 1}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                                {/* Producto */}
+                                <td>
+                                  <select
+                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
+                                    value={editForm.tipo_combustible}
+                                    onChange={e => setEditForm({ ...editForm, tipo_combustible: e.target.value })}
+                                  >
+                                    {combustibles.map(comb => (
+                                      <option key={comb.codigo} value={comb.codigo}>{comb.codigo}</option>
+                                    ))}
+                                  </select>
+                                </td>
+                                {/* Galones */}
+                                <td>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    className="input py-0 h-6 text-xs w-full text-right font-mono bg-white border-amber-300"
+                                    value={editForm.cantidad_galones}
+                                    onChange={e => setEditForm({ ...editForm, cantidad_galones: e.target.value })}
+                                  />
+                                </td>
+                                {/* Importe (Editable solo si galones = 0, sino calculado) */}
+                                <td>
+                                  {parseFloat(editForm.cantidad_galones) === 0 ? (
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      className="input py-0 h-6 text-xs w-full text-right font-mono bg-white border-amber-300"
+                                      value={editForm.importe}
+                                      onChange={e => setEditForm({ ...editForm, importe: e.target.value })}
+                                    />
+                                  ) : (
+                                    <span className="block text-right font-mono text-xs font-medium px-2 text-slate-700">
+                                      {fs(Math.round((parseFloat(editForm.cantidad_galones) || 0) * precioDiario(editForm.tipo_combustible)))}
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ background: '#fff7ed' }}>—</td>
+                                {/* Acciones Guardar / Cancelar */}
+                                <td className="text-center space-x-1.5">
+                                  <button
+                                    onClick={() => saveEdit(r.id)}
+                                    className="text-green-600 hover:text-green-800 text-xs font-bold"
+                                  >
+                                    Guardar
+                                  </button>
+                                  <button
+                                    onClick={() => { setEditingId(null); setEditForm(null) }}
+                                    className="text-slate-500 hover:text-slate-700 text-xs font-semibold"
+                                  >
+                                    Cancel
+                                  </button>
+                                </td>
+                              </tr>
+                            )
+                          }
+
                           return (
                             <tr key={r.id}>
                               <td className="text-xs">{fecha}</td>
@@ -905,11 +1498,13 @@ export default function VentasPage() {
                               <td className="text-xs">{r.conductor ?? '—'}</td>
                               <td className="text-xs">{r.dni_conductor ?? '—'}</td>
                               <td className="text-center text-xs">{r.turno_id}</td>
-                              <td className="text-xs font-medium">{r.tipo_combustible}</td>
-                              <td className="text-right font-mono text-xs">
-                                {r.cantidad_galones.toFixed(3)}
+                              <td className="text-xs font-medium">
+                                {r.cantidad_galones === 0 ? 'REG. RÁPIDO' : r.tipo_combustible}
                               </td>
-                              <td className="text-right font-mono text-xs">{fs(r.importe_centimos)}</td>
+                              <td className="text-right font-mono text-xs">
+                                {r.cantidad_galones > 0 ? r.cantidad_galones.toFixed(3) : '—'}
+                              </td>
+                              <td className="text-right font-mono text-xs font-semibold text-slate-700">{fs(r.importe_centimos)}</td>
                               <td
                                 className="text-right font-mono text-xs font-semibold"
                                 style={{
@@ -917,9 +1512,15 @@ export default function VentasPage() {
                                   color: variacion > 0 ? '#16a34a' : variacion < 0 ? '#dc2626' : '#ea580c',
                                 }}
                               >
-                                {fs(Math.abs(variacion))}
+                                {r.cantidad_galones > 0 ? fs(Math.abs(variacion)) : '—'}
                               </td>
-                              <td className="text-center">
+                              <td className="text-center space-x-2">
+                                <button
+                                  onClick={() => startEdit(r)}
+                                  className="text-blue-600 hover:text-blue-800 text-xs font-semibold"
+                                >
+                                  Editar
+                                </button>
                                 <button
                                   onClick={() => deleteRegistro(r.id)}
                                   className="text-red-600 hover:text-red-800 text-xs font-semibold"
@@ -994,7 +1595,7 @@ export default function VentasPage() {
                     
                     {/* Fila de Gran Total Mensual */}
                     <tr className="font-bold text-slate-800" style={{ background: '#ffedd5' }}>
-                      <td className="text-left font-bold text-amber-950 px-2 py-1.5" colSpan={2}>
+                      <td className="text-left font-bold text-amber-955 px-2 py-1.5" colSpan={2}>
                         {nombreMes}
                       </td>
                       <td className="text-right font-mono text-xs">{fs(totalMensual.total_consola)}</td>
