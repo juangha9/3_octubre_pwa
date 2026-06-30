@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'Roboto', sans-serif;
+    background-color: #F1F5F9;
+    color: #1E293B;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scrollbar compacto */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #F1F5F9; }
+  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+}
+
+@layer components {
+  /* ── Tabla estilo Excel compacta ── */
+  .table-excel {
+    @apply w-full border-collapse text-sm;
+  }
+  .table-excel thead th {
+    @apply bg-primary px-2 py-1 text-left font-medium text-primary-text border border-app-border
+           whitespace-nowrap select-none;
+    height: 1.875rem; /* 30px header */
+  }
+  .table-excel tbody tr {
+    @apply transition-colors duration-200 ease-in-out;
+    height: 1.75rem; /* 28px row */
+  }
+  .table-excel tbody tr:hover {
+    @apply bg-blue-50;
+  }
+  .table-excel tbody tr:nth-child(even) {
+    @apply bg-slate-50;
+  }
+  .table-excel tbody td {
+    @apply px-2 py-0.5 border border-app-border whitespace-nowrap;
+  }
+
+  /* ── Botones ── */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium
+           transition-all duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-1
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary { @apply btn bg-primary hover:bg-primary-dark text-primary-text focus:ring-primary-dark; }
+  .btn-success { @apply btn bg-success hover:bg-success-dark text-success-text focus:ring-success-dark; }
+  .btn-danger  { @apply btn bg-danger hover:bg-danger-dark text-danger-text focus:ring-danger-dark; }
+  .btn-warning { @apply btn bg-warning hover:bg-warning-dark text-warning-text focus:ring-warning-dark; }
+  .btn-ghost   { @apply btn bg-transparent hover:bg-app-border text-app-text focus:ring-app-border; }
+
+  /* ── Inputs ── */
+  .input {
+    @apply w-full rounded border border-app-border bg-white px-2 py-1 text-sm text-app-text
+           placeholder:text-app-muted
+           focus:outline-none focus:ring-2 focus:ring-primary-dark focus:border-primary-dark
+           transition-all duration-200 ease-in-out;
+  }
+  .input-money {
+    @apply input text-right font-mono tracking-wide;
+  }
+
+  /* ── Card / Panel ── */
+  .card {
+    @apply bg-white rounded-lg border border-app-border shadow-sm p-4
+           transition-all duration-200 ease-in-out;
+  }
+
+  /* ── Modal overlay ── */
+  .modal-overlay {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-black/40
+           backdrop-blur-sm transition-all duration-200 ease-in-out;
+  }
+  .modal-box {
+    @apply bg-white rounded-lg shadow-xl border border-app-border w-full max-w-lg mx-4
+           transition-all duration-200 ease-in-out;
+  }
+
+  /* ── Badge ── */
+  .badge {
+    @apply inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium;
+  }
+  .badge-success { @apply badge bg-success text-success-text; }
+  .badge-danger  { @apply badge bg-danger text-danger-text; }
+  .badge-warning { @apply badge bg-warning text-warning-text; }
+  .badge-primary { @apply badge bg-primary text-primary-text; }
+  .badge-accent  { @apply badge bg-accent text-accent-text; }
+}

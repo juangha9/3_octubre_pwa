@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: #f1f5f9; min-height: 100vh; }
+    input, select, button { font-family: inherit; }
+    input[type=number] { -moz-appearance: textfield; }
+    input[type=number]::-webkit-outer-spin-button,
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    @media (max-width: 900px) {
+      .cierre-grid { grid-template-columns: 1fr !important; }
+    }
+    @media print {
+      .no-print { display: none !important; }
+      body { background: white; }
+      .print-card { box-shadow: none !important; border: 1px solid #e2e8f0 !important; }
+    }
+  </style>
+</helmet>
+
+<!-- ══════════ HOME ══════════ -->
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}">
+<div data-screen-label="Home" style="min-height:100vh;background:linear-gradient(160deg,#0b1d38 0%,#163060 55%,#0c3d28 100%);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px">
+  <div style="text-align:center;margin-bottom:60px">
+    <div style="width:84px;height:84px;background:rgba(255,255,255,0.10);border:1.5px solid rgba(255,255,255,0.14);border-radius:28px;display:flex;align-items:center;justify-content:center;font-size:42px;margin:0 auto 20px">⛽</div>
+    <h1 style="color:white;font-size:30px;font-weight:900;margin:0 0 6px;letter-spacing:-0.5px">Sistema Grifero</h1>
+    <p style="color:rgba(255,255,255,0.38);font-size:12px;font-weight:600;letter-spacing:2px;text-transform:uppercase">Selecciona una operación</p>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:12px;width:100%;max-width:380px">
+    <button onClick="{{ onCierre }}"
+      style="background:white;color:#0b1d38;border:none;border-radius:20px;padding:22px 24px;cursor:pointer;display:flex;align-items:center;gap:18px;box-shadow:0 16px 48px rgba(0,0,0,0.40);text-align:left;width:100%;transition:transform 0.12s,box-shadow 0.12s"
+      style-hover="transform:translateY(-3px);box-shadow:0 24px 60px rgba(0,0,0,0.50)">
+      <div style="width:58px;height:58px;background:linear-gradient(135deg,#d1fae5,#6ee7b7);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0">💰</div>
+      <div>
+        <div style="font-size:19px;font-weight:800;margin-bottom:3px">Cierre de Caja</div>
+        <div style="font-size:12px;font-weight:500;color:#64748b">Conteo de efectivo y cierre de turno</div>
+      </div>
+    </button>
+    <button onClick="{{ onVarillaje }}"
+      style="background:rgba(255,255,255,0.07);color:white;border:1.5px solid rgba(255,255,255,0.16);border-radius:20px;padding:22px 24px;cursor:pointer;display:flex;align-items:center;gap:18px;text-align:left;width:100%;transition:all 0.12s"
+      style-hover="background:rgba(255,255,255,0.12);transform:translateY(-2px)">
+      <div style="width:58px;height:58px;background:rgba(255,255,255,0.10);border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0">📏</div>
+      <div>
+        <div style="font-size:19px;font-weight:800;margin-bottom:3px">Varillaje</div>
+        <div style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.42)">Medición de tanques de combustible</div>
+      </div>
+    </button>
+  </div>
+  <p style="color:rgba(255,255,255,0.22);font-size:11px;margin-top:48px">{{ dateStr }} &nbsp;·&nbsp; {{ timeStr }}</p>
+</div>
+</sc-if>
+
+<!-- ══════════ CIERRE DE CAJA ══════════ -->
+<sc-if value="{{ isCierre }}" hint-placeholder-val="{{ false }}">
+<div data-screen-label="Cierre de Caja" style="min-height:100vh;background:#f1f5f9">
+
+  <!-- Top bar -->
+  <div class="no-print" style="background:white;border-bottom:1.5px solid #e8edf3;height:54px;padding:0 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:20;box-shadow:0 1px 4px rgba(0,0,0,0.05)">
+    <button onClick="{{ onBack }}" style="background:#f1f5f9;border:none;border-radius:10px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#475569;transition:background 0.1s" style-hover="background:#e2e8f0">←</button>
+    <div style="font-size:16px;font-weight:800;color:#0f172a;flex:1">Cierre de Caja</div>
+    <div style="font-size:12px;font-weight:600;color:#94a3b8;background:#f8fafc;padding:5px 12px;border-radius:8px;border:1px solid #e8edf3">{{ dateStr }} · {{ timeStr }}</div>
+  </div>
+
+  <!-- Grid -->
+  <div class="cierre-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:14px;max-width:1280px;margin:0 auto">
+
+    <!-- ── LEFT COLUMN ── -->
+    <div style="display:flex;flex-direction:column;gap:12px">
+
+      <!-- Info de turno -->
+      <div class="print-card" style="background:white;border-radius:14px;padding:16px;box-shadow:0 1px 5px rgba(0,0,0,0.07)">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:14px">Información de Turno</div>
+        <div style="margin-bottom:12px">
+          <label style="display:block;font-size:11px;font-weight:600;color:#64748b;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.4px">Colaborador</label>
+          <input type="text" value="{{ colaborador }}" onChange="{{ onColaboradorChange }}" placeholder="Nombre del colaborador"
+            style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:9px 13px;font-size:14px;font-weight:600;color:#0f172a;outline:none;transition:border-color 0.15s"
+            style-focus="border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,0.12)" />
+        </div>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:10px">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:#64748b;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.4px">Turno</label>
+            <select value="{{ turno }}" onChange="{{ onTurnoChange }}"
+              style="width:100%;border:1.5px solid #e2e8f0;border-radius:10px;padding:9px 10px;font-size:14px;font-weight:700;color:#0f172a;background:white;outline:none;cursor:pointer">
+              <option value="1">Turno 1</option>
+              <option value="2">Turno 2</option>
+              <option value="3">Turno 3</option>
+              <option value="4">Turno 4</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:#64748b;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.4px">Horario</label>
+            <div style="border:1.5px solid #f1f5f9;border-radius:10px;padding:9px 13px;font-size:13px;font-weight:600;color:#64748b;background:#f8fafc">{{ turnoHoras }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Medios de Pago -->
+      <div class="print-card" style="background:white;border-radius:14px;padding:16px;box-shadow:0 1px 5px rgba(0,0,0,0.07)">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:14px">Medios de Pago</div>
+        <!-- Efectivo banner -->
+        <div style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border:1.5px solid #86efac;border-radius:12px;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div>
+            <div style="font-size:10px;font-weight:700;color:#16a34a;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:1px">Efectivo</div>
+            <div style="font-size:10px;font-weight:500;color:#4ade80">Auto-calculado del conteo</div>
+          </div>
+          <div style="font-size:22px;font-weight:900;color:#15803d;font-variant-numeric:tabular-nums">{{ efectivoStr }}</div>
+        </div>
+        <!-- Yape -->
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #f8fafc">
+          <div style="width:38px;height:38px;border-radius:11px;background:#6d28d9;display:flex;align-items:center;justify-content:center;color:white;font-size:13px;font-weight:900;flex-shrink:0;letter-spacing:-0.5px">Y</div>
+          <div style="flex:1;font-size:14px;font-weight:700;color:#334155">Yape</div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span style="font-size:12px;font-weight:600;color:#94a3b8">S/</span>
+            <input type="number" value="{{ yape }}" onChange="{{ onYapeChange }}" placeholder="0.00" step="0.01" min="0"
+              style="width:116px;border:1.5px solid #e2e8f0;border-radius:10px;padding:8px 11px;font-size:15px;font-weight:700;text-align:right;color:#0f172a;outline:none;transition:border-color 0.15s"
+              style-focus="border-color:#6d28d9;box-shadow:0 0 0 3px rgba(109,40,217,0.10)" />
+          </div>
+        </div>
+        <!-- OpenPay -->
+        <div style="display:flex;align-items:center;gap:12px;padding:9px 0">
+          <div style="width:38px;height:38px;border-radius:11px;background:#0369a1;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:900;flex-shrink:0">OP</div>
+          <div style="flex:1;font-size:14px;font-weight:700;color:#334155">OpenPay</div>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span style="font-size:12px;font-weight:600;color:#94a3b8">S/</span>
+            <input type="number" value="{{ openpay }}" onChange="{{ onOpenpayChange }}" placeholder="0.00" step="0.01" min="0"
+              style="width:116px;border:1.5px solid #e2e8f0;border-radius:10px;padding:8px 11px;font-size:15px;font-weight:700;text-align:right;color:#0f172a;outline:none;transition:border-color 0.15s"
+              style-focus="border-color:#0369a1;box-shadow:0 0 0 3px rgba(3,105,161,0.10)" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Vales -->
+      <div class="print-card" style="background:white;border-radius:14px;padding:16px;box-shadow:0 1px 5px rgba(0,0,0,0.07)">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:14px">Vales</div>
+        <!-- Col headers -->
+        <div style="display:grid;grid-template-columns:1fr 68px 96px;gap:6px;padding-bottom:7px;border-bottom:1.5px solid #f1f5f9;margin-bottom:2px">
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase">Tipo</div>
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase;text-align:center">N°</div>
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase;text-align:right">Total S/</div>
+        </div>
+
+        <sc-for list="{{ vales }}" as="v" hint-placeholder-count="5">
+          <div style="display:grid;grid-template-columns:1fr 68px 96px;gap:6px;align-items:center;padding:6px 0;border-bottom:1px solid #f8fafc">
+            <div style="font-size:13px;font-weight:600;color:#334155">{{ v.label }}</div>
+            <input type="number" value="{{ v.count }}" onChange="{{ v.onCount }}" placeholder="0" min="0"
+              style="border:1.5px solid #e2e8f0;border-radius:8px;padding:5px 6px;text-align:center;font-size:13px;font-weight:700;color:#0f172a;outline:none;width:100%"
+              style-focus="border-color:#3b82f6" />
+            <input type="number" value="{{ v.amt }}" onChange="{{ v.onAmt }}" placeholder="0.00" step="0.01" min="0"
+              style="border:1.5px solid #e2e8f0;border-radius:8px;padding:5px 6px;text-align:right;font-size:13px;font-weight:700;color:#0f172a;outline:none;width:100%"
+              style-focus="border-color:#3b82f6" />
+          </div>
+        </sc-for>
+
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:10px;padding-top:10px;border-top:1.5px solid #e2e8f0">
+          <span style="font-size:11px;font-weight:700;color:#64748b">Total vales</span>
+          <span style="font-size:17px;font-weight:900;color:#0f172a">{{ valesTotalStr }}</span>
+        </div>
+      </div>
+
+      <!-- Resumen -->
+      <div class="print-card" style="background:white;border-radius:14px;padding:16px;box-shadow:0 1px 5px rgba(0,0,0,0.07)">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:14px">Resumen</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #f8fafc">
+          <span style="font-size:14px;font-weight:600;color:#475569">Total</span>
+          <span style="font-size:22px;font-weight:900;color:#0f172a;font-variant-numeric:tabular-nums">{{ totalStr }}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1.5px solid #e2e8f0">
+          <span style="font-size:14px;font-weight:600;color:#475569">Total Consola</span>
+          <div style="display:flex;align-items:center;gap:5px">
+            <span style="font-size:12px;font-weight:600;color:#94a3b8">S/</span>
+            <input type="number" value="{{ totalConsola }}" onChange="{{ onTotalConsolaChange }}" placeholder="0.000" step="0.001" min="0"
+              style="width:128px;border:1.5px solid #e2e8f0;border-radius:10px;padding:8px 11px;font-size:16px;font-weight:700;text-align:right;color:#0f172a;outline:none"
+              style-focus="border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,0.12)" />
+          </div>
+        </div>
+        <!-- Diferencia -->
+        <div style="padding:12px 0;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:14px;font-weight:700;color:#334155">Diferencia</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <!-- Sobra -->
+            <sc-if value="{{ sobra }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size:22px;font-weight:900;color:#2563eb;font-variant-numeric:tabular-nums">{{ difStr }}</span>
+              <span style="background:#2563eb;color:white;font-size:10px;font-weight:800;padding:3px 9px;border-radius:100px;letter-spacing:0.5px">SOBRA</span>
+            </sc-if>
+            <!-- Falta -->
+            <sc-if value="{{ falta }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size:22px;font-weight:900;color:#dc2626;font-variant-numeric:tabular-nums">{{ difStr }}</span>
+              <span style="background:#dc2626;color:white;font-size:10px;font-weight:800;padding:3px 9px;border-radius:100px;letter-spacing:0.5px">FALTA</span>
+            </sc-if>
+            <!-- Exacto -->
+            <sc-if value="{{ exacto }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size:22px;font-weight:900;color:#16a34a;font-variant-numeric:tabular-nums">{{ difStr }}</span>
+              <span style="background:#16a34a;color:white;font-size:10px;font-weight:800;padding:3px 9px;border-radius:100px;letter-spacing:0.5px">EXACTO</span>
+            </sc-if>
+            <!-- Sin consola -->
+            <sc-if value="{{ noDif }}" hint-placeholder-val="{{ true }}">
+              <span style="font-size:22px;font-weight:900;color:#cbd5e1">—</span>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+
+      <!-- Botones acción -->
+      <div class="no-print" style="display:flex;gap:10px;padding-bottom:24px">
+        <button onClick="{{ onLimpiar }}"
+          style="flex:1;background:white;color:#ef4444;border:1.5px solid #fecaca;border-radius:12px;padding:13px;font-size:14px;font-weight:700;cursor:pointer;transition:all 0.12s"
+          style-hover="background:#fef2f2;border-color:#fca5a5">🗑 Limpiar</button>
+        <button onClick="{{ onImprimir }}"
+          style="flex:1.6;background:#163060;color:white;border:none;border-radius:12px;padding:13px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 14px rgba(22,48,96,0.40);transition:all 0.12s"
+          style-hover="background:#1e3a8a;box-shadow:0 6px 18px rgba(22,48,96,0.55)">🖨 Imprimir</button>
+      </div>
+    </div>
+
+    <!-- ── RIGHT COLUMN: Conteo ── -->
+    <div style="display:flex;flex-direction:column;gap:12px">
+
+      <!-- Monedas -->
+      <div class="print-card" style="background:white;border-radius:14px;padding:16px;box-shadow:0 1px 5px rgba(0,0,0,0.07)">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:3px">Monedas</div>
+        <div style="font-size:11px;font-weight:500;color:#cbd5e1;margin-bottom:14px">Ingresa la cantidad de cada denominación</div>
+        <!-- Header row -->
+        <div style="display:grid;grid-template-columns:1fr 30px 50px 30px 86px;gap:6px;padding-bottom:7px;border-bottom:1.5px solid #f1f5f9;margin-bottom:3px">
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase">Denominación</div>
+          <div></div>
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase;text-align:center">Cant.</div>
+          <div></div>
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase;text-align:right">Total</div>
+        </div>
+        <sc-for list="{{ coins }}" as="c" hint-placeholder-count="6">
+          <div style="display:grid;grid-template-columns:1fr 30px 50px 30px 86px;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid #f8fafc">
+            <div style="font-size:13px;font-weight:600;color:#334155">{{ c.label }}</div>
+            <button onClick="{{ c.onDec }}" style="width:30px;height:30px;border:1.5px solid #e2e8f0;border-radius:7px;background:#f8fafc;cursor:pointer;font-size:16px;color:#64748b;display:flex;align-items:center;justify-content:center;line-height:1;transition:background 0.1s" style-hover="background:#e2e8f0">−</button>
+            <input type="number" value="{{ c.qty }}" onChange="{{ c.onQtyChange }}" min="0"
+              style="width:50px;height:30px;text-align:center;border:1.5px solid #e2e8f0;border-radius:7px;font-size:14px;font-weight:800;color:#0f172a;outline:none"
+              style-focus="border-color:#3b82f6" />
+            <button onClick="{{ c.onInc }}" style="width:30px;height:30px;border:1.5px solid #e2e8f0;border-radius:7px;background:#f8fafc;cursor:pointer;font-size:16px;color:#64748b;display:flex;align-items:center;justify-content:center;line-height:1;transition:background 0.1s" style-hover="background:#e2e8f0">+</button>
+            <div style="text-align:right;font-size:13px;font-weight:700;color:#16a34a;font-variant-numeric:tabular-nums">{{ c.totalStr }}</div>
+          </div>
+        </sc-for>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:10px;border-top:1.5px solid #e2e8f0">
+          <span style="font-size:11px;font-weight:700;color:#64748b">Total monedas</span>
+          <span style="font-size:16px;font-weight:900;color:#16a34a">{{ coinsTotalStr }}</span>
+        </div>
+      </div>
+
+      <!-- Billetes -->
+      <div class="print-card" style="background:white;border-radius:14px;padding:16px;box-shadow:0 1px 5px rgba(0,0,0,0.07)">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:3px">Billetes</div>
+        <div style="font-size:11px;font-weight:500;color:#cbd5e1;margin-bottom:14px">Ingresa la cantidad de cada denominación</div>
+        <div style="display:grid;grid-template-columns:1fr 30px 50px 30px 86px;gap:6px;padding-bottom:7px;border-bottom:1.5px solid #f1f5f9;margin-bottom:3px">
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase">Denominación</div>
+          <div></div>
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase;text-align:center">Cant.</div>
+          <div></div>
+          <div style="font-size:10px;font-weight:700;color:#cbd5e1;text-transform:uppercase;text-align:right">Total</div>
+        </div>
+        <sc-for list="{{ bills }}" as="b" hint-placeholder-count="5">
+          <div style="display:grid;grid-template-columns:1fr 30px 50px 30px 86px;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid #f8fafc">
+            <div style="font-size:13px;font-weight:600;color:#334155">{{ b.label }}</div>
+            <button onClick="{{ b.onDec }}" style="width:30px;height:30px;border:1.5px solid #e2e8f0;border-radius:7px;background:#f8fafc;cursor:pointer;font-size:16px;color:#64748b;display:flex;align-items:center;justify-content:center;line-height:1;transition:background 0.1s" style-hover="background:#e2e8f0">−</button>
+            <input type="number" value="{{ b.qty }}" onChange="{{ b.onQtyChange }}" min="0"
+              style="width:50px;height:30px;text-align:center;border:1.5px solid #e2e8f0;border-radius:7px;font-size:14px;font-weight:800;color:#0f172a;outline:none"
+              style-focus="border-color:#3b82f6" />
+            <button onClick="{{ b.onInc }}" style="width:30px;height:30px;border:1.5px solid #e2e8f0;border-radius:7px;background:#f8fafc;cursor:pointer;font-size:16px;color:#64748b;display:flex;align-items:center;justify-content:center;line-height:1;transition:background 0.1s" style-hover="background:#e2e8f0">+</button>
+            <div style="text-align:right;font-size:13px;font-weight:700;color:#16a34a;font-variant-numeric:tabular-nums">{{ b.totalStr }}</div>
+          </div>
+        </sc-for>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:10px;border-top:1.5px solid #e2e8f0">
+          <span style="font-size:11px;font-weight:700;color:#64748b">Total billetes</span>
+          <span style="font-size:16px;font-weight:900;color:#16a34a">{{ billsTotalStr }}</span>
+        </div>
+      </div>
+
+      <!-- Efectivo total card -->
+      <div style="background:linear-gradient(135deg,#163060,#2563eb);border-radius:14px;padding:20px;box-shadow:0 6px 22px rgba(22,48,96,0.40)">
+        <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.50);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px">Total Efectivo (Monedas + Billetes)</div>
+        <div style="font-size:38px;font-weight:900;color:white;font-variant-numeric:tabular-nums">{{ efectivoStr }}</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<!-- ══════════ VARILLAJE ══════════ -->
+<sc-if value="{{ isVarillaje }}" hint-placeholder-val="{{ false }}">
+<div data-screen-label="Varillaje" style="min-height:100vh;background:#f1f5f9">
+  <div class="no-print" style="background:white;border-bottom:1.5px solid #e8edf3;height:54px;padding:0 20px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 4px rgba(0,0,0,0.05)">
+    <button onClick="{{ onBack }}" style="background:#f1f5f9;border:none;border-radius:10px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;color:#475569" style-hover="background:#e2e8f0">←</button>
+    <div style="font-size:16px;font-weight:800;color:#0f172a;flex:1">Varillaje</div>
+    <div style="font-size:12px;font-weight:600;color:#94a3b8;background:#f8fafc;padding:5px 12px;border-radius:8px;border:1px solid #e8edf3">{{ dateStr }} · {{ timeStr }}</div>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:calc(100vh - 54px);padding:40px;text-align:center">
+    <div style="width:80px;height:80px;background:#e0f2fe;border-radius:24px;display:flex;align-items:center;justify-content:center;font-size:36px;margin-bottom:20px">📏</div>
+    <h2 style="font-size:22px;font-weight:800;color:#0f172a;margin:0 0 8px">Módulo en Desarrollo</h2>
+    <p style="font-size:14px;color:#64748b;max-width:340px;line-height:1.65;margin:0">El módulo de varillaje para medición y registro de tanques de combustible estará disponible próximamente.</p>
+  </div>
+</div>
+</sc-if>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    screen: 'home',
+    colaborador: '',
+    turno: '2',
+    turnoHoras: '05:00 am - 01:00 pm',
+    yape: '',
+    openpay: '',
+    // coins (qty as numbers)
+    c10: 0, c20: 0, c50: 0, sol1: 0, sol2: 0, sol5: 0,
+    // bills
+    b10: 0, b20: 0, b50: 0, b100: 0, b200: 0,
+    // vales
+    litCount: '', litAmt: '',
+    corCount: '', corAmt: '',
+    citvCount: '', citvAmt: '',
+    chevCount: '', chevAmt: '',
+    crdCount: '', crdAmt: '',
+    totalConsola: '',
+    now: new Date(),
+  };
+
+  componentDidMount() {
+    this._tick = setInterval(() => this.setState({ now: new Date() }), 30000);
+  }
+  componentWillUnmount() { clearInterval(this._tick); }
+
+  renderVals() {
+    const s = this.state;
+    const pad = n => String(n).padStart(2, '0');
+    const d = s.now;
+    const dateStr = `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
+    const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+    const TURNOS = {
+      '1': '01:00 am - 09:00 am',
+      '2': '05:00 am - 01:00 pm',
+      '3': '01:00 pm - 09:00 pm',
+      '4': '09:00 pm - 05:00 am',
+    };
+
+    const fmt = n => 'S/ ' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+    // Coin/bill definitions
+    const COIN_DEFS = [
+      { k: 'c10',  label: '10 céntimos', v: 0.10 },
+      { k: 'c20',  label: '20 céntimos', v: 0.20 },
+      { k: 'c50',  label: '50 céntimos', v: 0.50 },
+      { k: 'sol1', label: '1 sol',        v: 1    },
+      { k: 'sol2', label: '2 soles',      v: 2    },
+      { k: 'sol5', label: '5 soles',      v: 5    },
+    ];
+    const BILL_DEFS = [
+      { k: 'b10',  label: 'S/ 10',  v: 10  },
+      { k: 'b20',  label: 'S/ 20',  v: 20  },
+      { k: 'b50',  label: 'S/ 50',  v: 50  },
+      { k: 'b100', label: 'S/ 100', v: 100 },
+      { k: 'b200', label: 'S/ 200', v: 200 },
+    ];
+
+    const mkRow = (def) => {
+      const qty = s[def.k];
+      return {
+        label: def.label,
+        qty,
+        totalStr: 'S/ ' + (qty * def.v).toFixed(2),
+        onQtyChange: (e) => {
+          const v = Math.max(0, parseInt(e.target.value) || 0);
+          this.setState({ [def.k]: v });
+        },
+        onInc: () => this.setState(p => ({ [def.k]: p[def.k] + 1 })),
+        onDec: () => this.setState(p => ({ [def.k]: Math.max(0, p[def.k] - 1) })),
+      };
+    };
+
+    const coins = COIN_DEFS.map(mkRow);
+    const bills = BILL_DEFS.map(mkRow);
+    const coinsTotal = COIN_DEFS.reduce((sum, d) => sum + s[d.k] * d.v, 0);
+    const billsTotal = BILL_DEFS.reduce((sum, d) => sum + s[d.k] * d.v, 0);
+    const efectivo = coinsTotal + billsTotal;
+
+    // Vales
+    const VALE_DEFS = [
+      { label: 'Licitaciones', ck: 'litCount',  ak: 'litAmt'  },
+      { label: 'Corporación',  ck: 'corCount',  ak: 'corAmt'  },
+      { label: 'CITV',         ck: 'citvCount', ak: 'citvAmt' },
+      { label: 'Chevron',      ck: 'chevCount', ak: 'chevAmt' },
+      { label: 'Crédito',      ck: 'crdCount',  ak: 'crdAmt'  },
+    ];
+    const vales = VALE_DEFS.map(def => ({
+      label: def.label,
+      count: s[def.ck],
+      amt:   s[def.ak],
+      onCount: (e) => this.setState({ [def.ck]: e.target.value }),
+      onAmt:   (e) => this.setState({ [def.ak]: e.target.value }),
+    }));
+    const valesTotal = VALE_DEFS.reduce((sum, def) => sum + (parseFloat(s[def.ak]) || 0), 0);
+
+    const yapeN    = parseFloat(s.yape)    || 0;
+    const openpayN = parseFloat(s.openpay) || 0;
+    const total    = efectivo + yapeN + openpayN + valesTotal;
+
+    const consolaNum = parseFloat(s.totalConsola) || 0;
+    const hasConsola = s.totalConsola.trim() !== '';
+    const dif    = total - consolaNum;
+    const difAbs = Math.abs(dif);
+    const sobra  = hasConsola && dif >  0.0005;
+    const falta  = hasConsola && dif < -0.0005;
+    const exacto = hasConsola && !sobra && !falta;
+    const noDif  = !hasConsola;
+
+    return {
+      isHome:      s.screen === 'home',
+      isCierre:    s.screen === 'cierre',
+      isVarillaje: s.screen === 'varillaje',
+      onCierre:    () => this.setState({ screen: 'cierre' }),
+      onVarillaje: () => this.setState({ screen: 'varillaje' }),
+      onBack:      () => this.setState({ screen: 'home' }),
+
+      dateStr, timeStr,
+
+      colaborador:        s.colaborador,
+      onColaboradorChange: e => this.setState({ colaborador: e.target.value }),
+      turno:      s.turno,
+      turnoHoras: s.turnoHoras,
+      onTurnoChange: e => {
+        const t = e.target.value;
+        this.setState({ turno: t, turnoHoras: TURNOS[t] || '' });
+      },
+
+      yape:    s.yape,    onYapeChange:    e => this.setState({ yape: e.target.value }),
+      openpay: s.openpay, onOpenpayChange: e => this.setState({ openpay: e.target.value }),
+
+      efectivoStr:  fmt(efectivo),
+      coinsTotalStr: fmt(coinsTotal),
+      billsTotalStr: fmt(billsTotal),
+      coins, bills, vales,
+      valesTotalStr: fmt(valesTotal),
+      totalStr: fmt(total),
+
+      totalConsola:        s.totalConsola,
+      onTotalConsolaChange: e => this.setState({ totalConsola: e.target.value }),
+
+      sobra, falta, exacto, noDif,
+      difStr: 'S/ ' + difAbs.toFixed(3),
+
+      onLimpiar: () => {
+        if (!window.confirm('¿Deseas limpiar todos los datos del cierre?')) return;
+        this.setState({
+          colaborador:'', turno:'2', turnoHoras:'05:00 am - 01:00 pm',
+          yape:'', openpay:'',
+          c10:0,c20:0,c50:0,sol1:0,sol2:0,sol5:0,
+          b10:0,b20:0,b50:0,b100:0,b200:0,
+          litCount:'',litAmt:'',
+          corCount:'',corAmt:'',
+          citvCount:'',citvAmt:'',
+          chevCount:'',chevAmt:'',
+          crdCount:'',crdAmt:'',
+          totalConsola:'',
+        });
+      },
+      onImprimir: () => window.print(),
+    };
+  }
+}
+</script>
+</body>
+</html>
