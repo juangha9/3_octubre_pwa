@@ -254,7 +254,6 @@ export default function VentasPage() {
 
     // Inicializar inputs editables locales
     const newInputsMap: Record<number, ShiftInputs> = {}
-    // Usar turnos cargados o los de la base de datos
     const activeTurnos = turnos.length > 0 ? turnos : [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] as any[]
     for (const t of activeTurnos) {
       const c = map[t.id]
@@ -441,7 +440,7 @@ export default function VentasPage() {
   }
 
   // ── Guardar Cambios en la Tabla de Turnos (Control de Ventas) ──
-  const handleShiftInputChange = (turnoId: number, field: keyof ShiftInputs, val: string) => {
+  const handleInputChange = (turnoId: number, field: keyof ShiftInputs, val: string) => {
     setInputsMap(prev => ({
       ...prev,
       [turnoId]: {
@@ -732,6 +731,14 @@ export default function VentasPage() {
       faltante_sobrante: sumNullables('faltante_sobrante_centimos'),
     }
   }, [cierresHistorial])
+
+  // Formateador especial para diferencia (con color rojo/verde)
+  const renderDiferencia = (v: number | null) => {
+    if (v === null) return <td className="text-right font-mono text-xs text-app-muted">—</td>
+    if (v > 0) return <td className="text-right font-mono text-xs font-semibold text-green-600">+{formatSoles(v)}</td>
+    if (v < 0) return <td className="text-right font-mono text-xs font-semibold text-red-600">-{formatSoles(Math.abs(v))}</td>
+    return <td className="text-right font-mono text-xs text-app-muted">S/ 0.00</td>
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-slate-50">
