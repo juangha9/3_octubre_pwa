@@ -1,7 +1,6 @@
 import { Routes, Route, NavLink } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
-import VentasDelDiaPage from './ventas/VentasDelDiaPage'
-import VentasDiariasPage from './ventas/VentasDiariasPage'
+import VentasPage from './ventas/VentasDelDiaPage'
 import ConfiguracionPage from './configuracion/ConfiguracionPage'
 
 function Placeholder({ title }: { title: string }) {
@@ -13,8 +12,7 @@ function Placeholder({ title }: { title: string }) {
 }
 
 const NAV_ITEMS = [
-  { to: '/', label: 'Ventas del Día', end: true },
-  { to: '/ventas-diarias', label: 'Ventas Diarias' },
+  { to: '/', label: 'Ventas', end: true },
   { to: '/corporativo', label: 'Corporativo / Vales' },
   { to: '/compras', label: 'Compras' },
   { to: '/osinergmin', label: 'OSINERGMIN' },
@@ -58,8 +56,7 @@ export default function AdminLayout() {
       {/* Content */}
       <main className="flex flex-1 overflow-hidden">
         <Routes>
-          <Route path="/" element={<VentasDelDiaPage />} />
-          <Route path="/ventas-diarias" element={<VentasDiariasPage />} />
+          <Route path="/" element={<VentasPage />} />
           <Route path="/corporativo" element={<Placeholder title="Corporativo / Vales" />} />
           <Route path="/compras" element={<Placeholder title="Compras de Combustible" />} />
           <Route path="/osinergmin" element={<Placeholder title="OSINERGMIN" />} />
