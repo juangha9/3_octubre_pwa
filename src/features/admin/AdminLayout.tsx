@@ -14,7 +14,7 @@ function Placeholder({ title }: { title: string }) {
 
 const NAV_ITEMS = [
   { to: '/', label: 'Ventas', end: true },
-  { to: '/corporativo', label: 'Corporativo / Vales' },
+  { to: '/seguimiento', label: 'Seguimiento' },
   { to: '/compras', label: 'Compras' },
   { to: '/osinergmin', label: 'OSINERGMIN' },
   { to: '/configuracion', label: 'Configuración' },
@@ -58,7 +58,7 @@ export default function AdminLayout() {
       <main className="flex flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<VentasPage />} />
-          <Route path="/corporativo" element={<CorporativoPage />} />
+          <Route path="/seguimiento" element={<CorporativoPage />} />
           <Route path="/compras" element={<Placeholder title="Compras de Combustible" />} />
           <Route path="/osinergmin" element={<Placeholder title="OSINERGMIN" />} />
           <Route path="/configuracion" element={<ConfiguracionPage />} />

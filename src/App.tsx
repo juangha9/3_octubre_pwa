@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { useAuth } from '@/features/auth/useAuth'
+import { useHardenNumberInputs } from '@/lib/useHardenNumberInputs'
 import LoginPage from '@/features/auth/LoginPage'
 import GriferoLayout from '@/features/grifero/GriferoLayout'
 import AdminLayout from '@/features/admin/AdminLayout'
@@ -8,6 +9,9 @@ const ROUTER_FUTURE = { v7_startTransition: true, v7_relativeSplatPath: true }
 
 export default function App() {
   const { session, role, loading } = useAuth()
+
+  // Endurece todos los <input type="number"> de la app (global, una sola vez).
+  useHardenNumberInputs()
 
   // Muestra carga mientras session o role están pendientes
   if (loading || (session && !role)) return <LoadingScreen />

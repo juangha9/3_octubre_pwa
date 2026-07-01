@@ -15,21 +15,34 @@
   ::-webkit-scrollbar-track { background: #F1F5F9; }
   ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+
+  /* Inputs numéricos: sin flechas (spinners) en toda la app. El bloqueo de
+     teclas (e / + - * /) y del scroll del ratón se hace en useHardenNumberInputs. */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
 }
 
 @layer components {
-  /* ── Tabla estilo Excel compacta ── */
+  /* ── Tabla estilo Excel (legible) ── */
   .table-excel {
     @apply w-full border-collapse text-sm;
   }
   .table-excel thead th {
-    @apply bg-primary px-2 py-1 text-left font-medium text-primary-text border border-app-border
+    @apply bg-primary px-3 py-2 text-left font-semibold text-primary-text border border-app-border
            whitespace-nowrap select-none;
-    height: 1.875rem; /* 30px header */
+    height: 2.25rem;       /* 36px header */
+    font-size: 0.8125rem;  /* 13px */
   }
   .table-excel tbody tr {
     @apply transition-colors duration-200 ease-in-out;
-    height: 1.75rem; /* 28px row */
+    height: 2.25rem; /* 36px row */
   }
   .table-excel tbody tr:hover {
     @apply bg-blue-50;
@@ -38,7 +51,13 @@
     @apply bg-slate-50;
   }
   .table-excel tbody td {
-    @apply px-2 py-0.5 border border-app-border whitespace-nowrap;
+    @apply px-3 py-1 border border-app-border whitespace-nowrap;
+    font-size: 0.875rem;   /* 14px — prevalece sobre text-xs en línea para mayor legibilidad */
+  }
+  /* Inputs / selects dentro de la tabla heredan un tamaño legible */
+  .table-excel tbody td input,
+  .table-excel tbody td select {
+    font-size: 0.875rem;   /* 14px */
   }
 
   /* ── Botones ── */

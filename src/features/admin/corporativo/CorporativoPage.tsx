@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { formatSoles, toCentimos } from '@/lib/money'
 import { hoyLocal } from '@/lib/date'
+import { usePersistedState } from '@/lib/usePersistedState'
 import type { EmpresaCliente, Turno, TipoCombustible } from '@/types'
 
 // ─── Tipos ────────────────────────────────────────────────────────
@@ -107,10 +108,11 @@ const fs = (v: number | null | undefined) => v != null ? formatSoles(v) : '—'
 
 export default function CorporativoPage() {
   const [tab, setTab] = useState<Tab>('registros')
-  const [mes, setMes] = useState(getMes)
-  const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>('todos')
-  const [filtroEmpresa, setFiltroEmpresa] = useState('')
-  const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>('todos')
+  // Filtros persistidos: se recuerdan al cambiar de módulo o recargar.
+  const [mes, setMes] = usePersistedState('seguimiento.mes', getMes)
+  const [filtroTipo, setFiltroTipo] = usePersistedState<FiltroTipo>('seguimiento.filtroTipo', 'todos')
+  const [filtroEmpresa, setFiltroEmpresa] = usePersistedState('seguimiento.filtroEmpresa', '')
+  const [filtroEstado, setFiltroEstado] = usePersistedState<FiltroEstado>('seguimiento.filtroEstado', 'todos')
 
   const [rows, setRows] = useState<RegistroRow[]>([])
   const [preciosMap, setPreciosMap] = useState<Record<string, PreciosDia>>({})
@@ -147,37 +149,42 @@ export default function CorporativoPage() {
     const lastDay = new Date(+y, +m, 0).getDate()
     const to = `${y}-${m}-${String(lastDay).padStart(2, '0')}`
 
-    const [regRes, precRes] = await Promise.all([
-      supabase
-        .from('registro_ventas')
-        .select(
-          'id, fecha, turno_id, empresa_id, tipo_atencion, tipo_documento, ' +
-          'serie, numero, conductor, placa, dni_conductor, ' +
-          'tipo_combustible, cantidad_galones, precio_unit_centimos, importe_centimos, ' +
-          'empresa_facturacion, factura_numero, fecha_facturacion, estado_pago, fecha_pago, ' +
-          'empresas_clientes(nombre), turnos(nombre)'
-        )
-        .gte('fecha', from).lte('fecha', to)
-        .order('fecha', { ascending: false })
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('precios_diarios')
-        .select('fecha, precio_db5_centimos, precio_regular_centimos, precio_premium_centimos')
-        .gte('fecha', from).lte('fecha', to),
-    ])
+    try {
+      const [regRes, precRes] = await Promise.all([
+        supabase
+          .from('registro_ventas')
+          .select(
+            'id, fecha, turno_id, empresa_id, tipo_atencion, tipo_documento, ' +
+            'serie, numero, conductor, placa, dni_conductor, ' +
+            'tipo_combustible, cantidad_galones, precio_unit_centimos, importe_centimos, ' +
+            'empresa_facturacion, factura_numero, fecha_facturacion, estado_pago, fecha_pago, ' +
+            'empresas_clientes(nombre), turnos(nombre)'
+          )
+          .gte('fecha', from).lte('fecha', to)
+          .order('fecha', { ascending: false })
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('precios_diarios')
+          .select('fecha, precio_db5_centimos, precio_regular_centimos, precio_premium_centimos')
+          .gte('fecha', from).lte('fecha', to),
+      ])
 
-    setRows(
-      ((regRes.data ?? []) as Record<string, any>[]).map(r => ({
-        ...r,
-        empresa_nombre: (r.empresas_clientes as any)?.nombre ?? null,
-        turno_nombre: (r.turnos as any)?.nombre ?? null,
-      })) as RegistroRow[]
-    )
+      setRows(
+        ((Array.isArray(regRes.data) ? regRes.data : []) as Record<string, any>[]).map(r => ({
+          ...r,
+          empresa_nombre: (r.empresas_clientes as any)?.nombre ?? null,
+          turno_nombre: (r.turnos as any)?.nombre ?? null,
+        })) as RegistroRow[]
+      )
 
-    const pm: Record<string, PreciosDia> = {}
-    for (const p of (precRes.data ?? [])) pm[p.fecha] = p
-    setPreciosMap(pm)
-    setLoading(false)
+      const pm: Record<string, PreciosDia> = {}
+      for (const p of (Array.isArray(precRes.data) ? precRes.data : [])) pm[p.fecha] = p
+      setPreciosMap(pm)
+    } catch (err) {
+      console.error('Error al cargar registros del mes:', err)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { loadMes() }, [mes]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -334,7 +341,7 @@ export default function CorporativoPage() {
   // ─── Render ───────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
 
       {/* ── Barra superior ── */}
       <div className="border-b border-app-border bg-white px-4 py-2">

@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
-import type { ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
 import { hoyLocal } from '@/lib/date'
@@ -160,7 +159,7 @@ export default function VentasPage() {
   const [precios, setPrecios] = useState({ db5: '', regular: '', premium: '' })
   const [precioId, setPrecioId] = useState<string | null>(null)
   const [registros, setRegistros] = useState<RegistroRow[]>([])
-  const [loadingDia, setLoadingDia] = useState(false)
+  const [loadingDia, setLoadingDia] = useState(true)
   const [savingPrecios, setSavingPrecios] = useState(false)
   const [savingReg, setSavingReg] = useState(false)
   const [confirmReinicio, setConfirmReinicio] = useState(false)
@@ -214,92 +213,103 @@ export default function VentasPage() {
   }, [])
 
   // ── Carga de datos del día (Registro Diario) ──────────────────
-  const loadDia = useCallback(async () => {
-    setLoadingDia(true)
-    const [cierresRes, preciosRes, regRes] = await Promise.all([
-      supabase
-        .from('cierres_caja')
-        .select(
-          'id, turno_id, total_consola_centimos, yape_centimos, openpay_centimos, ' +
-          'deposito_transferencia_centimos, corporacion_centimos, licitaciones_centimos, ' +
-          'particulares_centimos, chevron_centimos, serafinado_centimos, redondeo_centimos, ' +
-          'contaminacion_centimos, entregado_grifero_centimos, contabilizado_admin_centimos, ' +
-          'colaborador_id, cierre_vales(monto_centimos)'
-        )
-        .eq('fecha', fecha),
-      supabase.from('precios_diarios').select('*').eq('fecha', fecha).maybeSingle(),
-      supabase
-        .from('registro_ventas')
-        .select(
-          'id, turno_id, tipo_atencion, empresa_id, conductor, placa, serie, numero, ' +
-          'dni_conductor, tipo_combustible, cantidad_galones, precio_unit_centimos, ' +
-          'importe_centimos, empresas_clientes(nombre)'
-        )
-        .eq('fecha', fecha)
-        .order('created_at'),
-    ])
+  const loadDia = useCallback(async (silent = false) => {
+    if (!silent) setLoadingDia(true)
+    try {
+      const [cierresRes, preciosRes, regRes] = await Promise.all([
+        supabase
+          .from('cierres_caja')
+          .select(
+            'id, turno_id, total_consola_centimos, yape_centimos, openpay_centimos, ' +
+            'deposito_transferencia_centimos, corporacion_centimos, licitaciones_centimos, ' +
+            'particulares_centimos, chevron_centimos, serafinado_centimos, redondeo_centimos, ' +
+            'contaminacion_centimos, entregado_grifero_centimos, contabilizado_admin_centimos, ' +
+            'colaborador_id, cierre_vales(monto_centimos)'
+          )
+          .eq('fecha', fecha),
+        supabase.from('precios_diarios').select('*').eq('fecha', fecha).maybeSingle(),
+        supabase
+          .from('registro_ventas')
+          .select(
+            'id, turno_id, tipo_atencion, empresa_id, conductor, placa, serie, numero, ' +
+            'dni_conductor, tipo_combustible, cantidad_galones, precio_unit_centimos, ' +
+            'importe_centimos, empresas_clientes(nombre)'
+          )
+          .eq('fecha', fecha)
+          .order('created_at'),
+      ])
 
-    // Armar mapa turno_id → CierreRow
-    const map: Record<number, CierreRow> = {}
-    const dbCierres = cierresRes.data ?? []
-    for (const raw of dbCierres) {
-      const vales = (raw.cierre_vales as { monto_centimos: number }[]) ?? []
-      const { cierre_vales: _cv, ...rest } = raw as any
-      map[raw.turno_id] = {
-        ...rest,
-        vales_total_centimos: vales.reduce((s, v) => s + v.monto_centimos, 0),
+      // Armar mapa turno_id → CierreRow
+      const map: Record<number, CierreRow> = {}
+      const dbCierres: any[] = (!cierresRes.error && Array.isArray(cierresRes.data)) ? cierresRes.data : []
+      for (const raw of dbCierres) {
+        const vales = (raw.cierre_vales as { monto_centimos: number }[]) ?? []
+        const { cierre_vales: _cv, ...rest } = raw as any
+        map[raw.turno_id] = {
+          ...rest,
+          vales_total_centimos: vales.reduce((s, v) => s + v.monto_centimos, 0),
+        }
       }
-    }
-    setCierresMap(map)
+      setCierresMap(map)
 
-    // Inicializar inputs editables locales
-    const newInputsMap: Record<number, ShiftInputs> = {}
+      // Precios del día
+      const pd = preciosRes.data
+      if (pd) {
+        setPrecioId(pd.id)
+        setPrecios({
+          db5: (pd.precio_db5_centimos / 100).toFixed(2),
+          regular: (pd.precio_regular_centimos / 100).toFixed(2),
+          premium: (pd.precio_premium_centimos / 100).toFixed(2),
+        })
+      } else {
+        setPrecioId(null)
+        setPrecios({ db5: '', regular: '', premium: '' })
+      }
+
+      // Registros de ventas
+      setRegistros(
+        ((regRes.data ?? []) as Record<string, any>[]).map(r => ({
+          ...r,
+          empresa_nombre: r.empresas_clientes?.nombre ?? null,
+        })) as any
+      )
+    } catch (err) {
+      console.error('Error al cargar datos del día:', err)
+    } finally {
+      if (!silent) setLoadingDia(false)
+    }
+  }, [fecha])
+
+  useEffect(() => {
+    if (activeTab === 'registro') {
+      loadDia(false)
+    }
+  }, [fecha, activeTab, loadDia])
+
+  // ── Reconstruir inputs editables (reactivo a cierres + turnos) ─
+  // Se separa de loadDia para no re-disparar la carga de red cuando
+  // llegan los turnos: eso causaba doble fetch y parpadeo al inicio.
+  // Los valores en 0 quedan como '' para mostrarse como placeholder
+  // y evitar que al escribir se antepongan dígitos (ej. "50" en vez de "5").
+  useEffect(() => {
     const activeTurnos = turnos.length > 0 ? turnos : [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] as any[]
+    const newInputsMap: Record<number, ShiftInputs> = {}
     for (const t of activeTurnos) {
-      const c = map[t.id]
+      const c = cierresMap[t.id]
       newInputsMap[t.id] = {
         total_consola: c?.total_consola_centimos != null ? (c.total_consola_centimos / 100).toFixed(2) : '',
-        yape: c ? (c.yape_centimos / 100).toFixed(2) : '0.00',
-        openpay: c ? (c.openpay_centimos / 100).toFixed(2) : '0.00',
-        deposito: c ? (c.deposito_transferencia_centimos / 100).toFixed(2) : '0.00',
-        serafinado: c ? (c.serafinado_centimos / 100).toFixed(2) : '0.00',
-        redondeo: c ? (c.redondeo_centimos / 100).toFixed(2) : '0.00',
+        yape: c?.yape_centimos ? (c.yape_centimos / 100).toFixed(2) : '',
+        openpay: c?.openpay_centimos ? (c.openpay_centimos / 100).toFixed(2) : '',
+        deposito: c?.deposito_transferencia_centimos ? (c.deposito_transferencia_centimos / 100).toFixed(2) : '',
+        serafinado: c?.serafinado_centimos ? (c.serafinado_centimos / 100).toFixed(2) : '',
+        redondeo: c?.redondeo_centimos ? (c.redondeo_centimos / 100).toFixed(2) : '',
         entregado_grifero: c?.entregado_grifero_centimos != null ? (c.entregado_grifero_centimos / 100).toFixed(2) : '',
         contabilizado_admin: c?.contabilizado_admin_centimos != null ? (c.contabilizado_admin_centimos / 100).toFixed(2) : '',
         colaborador_id: c?.colaborador_id ?? '',
       }
     }
     setInputsMap(newInputsMap)
-
-    // Precios del día
-    const pd = preciosRes.data
-    if (pd) {
-      setPrecioId(pd.id)
-      setPrecios({
-        db5: (pd.precio_db5_centimos / 100).toFixed(2),
-        regular: (pd.precio_regular_centimos / 100).toFixed(2),
-        premium: (pd.precio_premium_centimos / 100).toFixed(2),
-      })
-    } else {
-      setPrecioId(null)
-      setPrecios({ db5: '', regular: '', premium: '' })
-    }
-
-    // Registros de ventas
-    setRegistros(
-      ((regRes.data ?? []) as Record<string, any>[]).map(r => ({
-        ...r,
-        empresa_nombre: r.empresas_clientes?.nombre ?? null,
-      })) as any
-    )
-    setLoadingDia(false)
-  }, [fecha, turnos])
-
-  useEffect(() => {
-    if (activeTab === 'registro') {
-      loadDia()
-    }
-  }, [fecha, activeTab, loadDia])
+  }, [cierresMap, turnos])
 
   // ── Carga de datos del mes (Historial) ────────────────────────
   const loadHistorial = useCallback(async () => {
@@ -450,7 +460,7 @@ export default function VentasPage() {
     }))
   }
 
-  const handleShiftInputBlur = async (turnoId: number, changedField?: keyof ShiftInputs) => {
+  const handleShiftInputBlur = async (turnoId: number, _changedField?: keyof ShiftInputs) => {
     const inputs = inputsMap[turnoId]
     if (!inputs) return
 
@@ -463,6 +473,19 @@ export default function VentasPage() {
     const entregado = inputs.entregado_grifero === '' ? null : toCentimos(inputs.entregado_grifero)
     const contabilizado = inputs.contabilizado_admin === '' ? null : toCentimos(inputs.contabilizado_admin)
     
+    // Evitar crear cierres "fantasma": si aún no existe un cierre para este
+    // turno y no hay ningún dato significativo (todo vacío/en cero y sin
+    // colaborador elegido), no insertar nada. Antes, cualquier blur creaba
+    // una fila de puros ceros que aparecía en el historial como registro espurio.
+    const existingCierre = cierresMap[turnoId]
+    const tieneDatos =
+      totalConsola !== null ||
+      yape > 0 || openpay > 0 || deposito > 0 ||
+      serafinado > 0 || redondeo > 0 ||
+      entregado !== null || contabilizado !== null ||
+      inputs.colaborador_id !== ''
+    if (!existingCierre && !tieneDatos) return
+
     // Asignar colaborador por defecto si está vacío
     let colaboradorId = inputs.colaborador_id
     if (!colaboradorId && colaboradores.length > 0) {
@@ -488,14 +511,13 @@ export default function VentasPage() {
       contabilizado_admin_centimos: contabilizado,
     }
 
-    const existingCierre = cierresMap[turnoId]
     try {
       if (existingCierre) {
         await supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id)
       } else {
         await supabase.from('cierres_caja').insert(payload)
       }
-      loadDia()
+      loadDia(true) // Refresco silencioso
     } catch (err) {
       console.error('Error al guardar turno:', err)
     }
@@ -534,7 +556,7 @@ export default function VentasPage() {
         tipo_atencion: p.tipo_atencion,
         tipo_combustible: p.tipo_combustible,
       }))
-      loadDia()
+      loadDia(true) // Refresco silencioso
     } catch (err) {
       alert('Error al agregar el registro de venta: ' + (err as any).message)
     } finally {
@@ -549,15 +571,14 @@ export default function VentasPage() {
     setSavingQuick(true)
 
     try {
-      // Registrar un crédito rápido de tipo 'particular'
       const { error } = await supabase.from('registro_ventas').insert({
         fecha,
         turno_id: parseInt(quickTurno),
         colaborador_id: profile.id,
         tipo_documento: 'vale',
         tipo_atencion: 'particular',
-        tipo_combustible: 'REGULAR', // default
-        cantidad_galones: 0, // 0 indica registro rápido/parcial
+        tipo_combustible: 'REGULAR',
+        cantidad_galones: 0,
         precio_unit_centimos: 0,
         importe_centimos: toCentimos(monto),
         empresa_id: null,
@@ -565,7 +586,7 @@ export default function VentasPage() {
       if (error) throw error
 
       setQuickMonto('')
-      loadDia()
+      loadDia(true) // Refresco silencioso
     } catch (err) {
       alert('Error al registrar crédito rápido: ' + (err as any).message)
     } finally {
@@ -596,7 +617,6 @@ export default function VentasPage() {
     const galones = parseFloat(editForm.cantidad_galones) || 0
     let precioUnit = precioDiario(editForm.tipo_combustible)
     
-    // Si es un registro rápido modificado, recalcular importe
     let importeCentimos = 0
     if (galones === 0) {
       importeCentimos = toCentimos(editForm.importe)
@@ -631,7 +651,7 @@ export default function VentasPage() {
 
       setEditingId(null)
       setEditForm(null)
-      loadDia()
+      loadDia(true) // Refresco silencioso
     } catch (err) {
       alert('Error al guardar cambios: ' + (err as any).message)
     }
@@ -641,7 +661,7 @@ export default function VentasPage() {
   async function deleteRegistro(id: string) {
     if (!confirm('¿Seguro que desea eliminar este registro?')) return
     await supabase.from('registro_ventas').delete().eq('id', id)
-    loadDia()
+    loadDia(true) // Refresco silencioso
   }
 
   // ── Reiniciar día ─────────────────────────────────────────────
@@ -654,7 +674,7 @@ export default function VentasPage() {
         await supabase.from('precios_diarios').delete().eq('id', precioId)
       }
       await supabase.from('cierres_caja').delete().eq('fecha', fecha)
-      await loadDia()
+      await loadDia(false)
     } catch (err) {
       console.error('Error al reiniciar el día:', err)
     } finally {
@@ -741,7 +761,7 @@ export default function VentasPage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-slate-50">
+    <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-slate-50">
       
       {/* ── Top Header & Tab Selector ───────────────────────────── */}
       <div className="bg-white border-b border-app-border px-4 py-2 shadow-sm">
@@ -945,11 +965,11 @@ export default function VentasPage() {
 
                         const inputs = inputsMap[t.id] || {
                           total_consola: '',
-                          yape: '0.00',
-                          openpay: '0.00',
-                          deposito: '0.00',
-                          serafinado: '0.00',
-                          redondeo: '0.00',
+                          yape: '',
+                          openpay: '',
+                          deposito: '',
+                          serafinado: '',
+                          redondeo: '',
                           entregado_grifero: '',
                           contabilizado_admin: '',
                           colaborador_id: '',
@@ -983,6 +1003,7 @@ export default function VentasPage() {
                                 value={inputs.yape}
                                 onChange={e => handleInputChange(t.id, 'yape', e.target.value)}
                                 onBlur={() => handleShiftInputBlur(t.id, 'yape')}
+                                placeholder="0.00"
                               />
                             </td>
                             {/* Open Pay */}
@@ -994,6 +1015,7 @@ export default function VentasPage() {
                                 value={inputs.openpay}
                                 onChange={e => handleInputChange(t.id, 'openpay', e.target.value)}
                                 onBlur={() => handleShiftInputBlur(t.id, 'openpay')}
+                                placeholder="0.00"
                               />
                             </td>
                             {/* Depósito */}
@@ -1005,6 +1027,7 @@ export default function VentasPage() {
                                 value={inputs.deposito}
                                 onChange={e => handleInputChange(t.id, 'deposito', e.target.value)}
                                 onBlur={() => handleShiftInputBlur(t.id, 'deposito')}
+                                placeholder="0.00"
                               />
                             </td>
                             {/* Vales (Solo Lectura, sumado de cierre_vales) */}
@@ -1046,6 +1069,7 @@ export default function VentasPage() {
                                 value={inputs.serafinado}
                                 onChange={e => handleInputChange(t.id, 'serafinado', e.target.value)}
                                 onBlur={() => handleShiftInputBlur(t.id, 'serafinado')}
+                                placeholder="0.00"
                               />
                             </td>
                             {/* Redondeo */}
@@ -1057,6 +1081,7 @@ export default function VentasPage() {
                                 value={inputs.redondeo}
                                 onChange={e => handleInputChange(t.id, 'redondeo', e.target.value)}
                                 onBlur={() => handleShiftInputBlur(t.id, 'redondeo')}
+                                placeholder="0.00"
                               />
                             </td>
                             {/* Efectivo Final */}
@@ -1103,9 +1128,9 @@ export default function VentasPage() {
                                       
                                       const existingCierre = cierresMap[t.id]
                                       if (existingCierre) {
-                                        supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id).then(() => loadDia())
+                                        supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id).then(() => loadDia(true))
                                       } else {
-                                        supabase.from('cierres_caja').insert(payload).then(() => loadDia())
+                                        supabase.from('cierres_caja').insert(payload).then(() => loadDia(true))
                                       }
                                       return updated
                                     })

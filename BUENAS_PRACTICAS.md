@@ -4,7 +4,7 @@
 > seguridad, las convenciones de código y el plan de trabajo. **Leer antes de
 > empezar cada módulo nuevo.**
 
-Última actualización: 2026-06-29 (rev 3 — distrito MIRAFLORES, ALEXMATH configurable, interfaz admin "Sistema Integrado de Ventas")
+Última actualización: 2026-07-01 (rev 4 — inputs numéricos endurecidos globalmente, tablas adaptativas al ancho, filtros persistidos con usePersistedState; módulo Corporativo/Vales renombrado a "Seguimiento")
 
 ---
 
@@ -495,9 +495,33 @@ osinergmin_top10
 
 ### React / UI
 - Estado del servidor → TanStack Query (no `useEffect` manual para fetch).
-- Inputs numéricos: validar y normalizar (el prototipo ya hace `Math.max(0, …)`).
+- Inputs numéricos: validar y normalizar (ver subsección dedicada abajo).
 - Accesibilidad básica: `label` en inputs, foco visible, botones con tamaño táctil.
 - Diseño **móvil/kiosco primero**: botones grandes, alto contraste, flujo lineal.
+- **Persistir filtros** (mes, tipo, empresa…) con `usePersistedState` (`lib/`), que los
+  guarda en `localStorage`. Así no se pierden al cambiar de módulo ni al recargar.
+  Pesa bytes por clave → **no satura** el navegador. Usar claves con prefijo de módulo
+  (ej. `'seguimiento.mes'`).
+- **Ancho de tablas/páginas:** la raíz de cada página va con `flex-1 min-w-0` para
+  llenar el ancho disponible (el `<main>` es flex-row). Las tablas usan `table-excel`
+  (`w-full`) → se **adaptan** al monitor (1080p, 1440p…). El scroll horizontal lo
+  maneja un contenedor `overflow-x-auto`. Preferir adaptativo, no anchos fijos.
+
+### Inputs numéricos (cajas de texto de números)
+Todo `<input type="number">` queda **endurecido automáticamente** por el hook global
+`useHardenNumberInputs()` (en `lib/`, llamado una vez en `App.tsx`) + CSS en `index.css`.
+No hay que configurar cada input: basta con usar `type="number"`.
+
+Reglas aplicadas a **toda** caja numérica:
+- **No** admite teclear `e` / `E`, ni `+  -  *  /`.
+- El **scroll del ratón no cambia** el valor (se quita el foco al hacer wheel).
+- **Sin flechas** (spinners) arriba/abajo: solo se digita el número.
+- Para montos: céntimos enteros + `toCentimos` / `formatSoles` (ver §6 dinero).
+- Mostrar 0 como **placeholder** (`placeholder="0.00"`, `value=''`) en celdas editables,
+  no como `0.00` fijo, para que al escribir no se antepongan dígitos (evita "50" por "5").
+
+> Si algún input llegara a necesitar negativos, hacer el hook configurable para excluir
+> ese campo; hoy se bloquea `-` en todos por pedido de negocio.
 
 ---
 
