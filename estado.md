@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-02**
+Última actualización: **2026-07-03**
 
 ## Módulos completados
 
@@ -24,7 +24,7 @@ metadata:
   - Turnos, Combustibles, Tanques, Empresas Clientes, Proveedores
   - Sistema — `app_config` editable por `admin_grifo` y `superadmin` (política RLS actualizada en migración `002_app_config_admin_write.sql`, **aplicada con éxito**)
 - **Ventas del Día & Ventas Diarias (Unificados)** ← **CONSTRUIDO Y PERFECCIONADO** (`src/features/admin/ventas/VentasDelDiaPage.tsx`)
-  - **Toolbar**: fecha, precios DIESEL/REGULAR/PREMIUM (auto-save en `precios_diarios`), toggle ABREVIADO/COMPLETO. **Ya NO existe** el botón REINICIAR DÍA (se quitó por decisión de negocio: nada debe borrar en masa a nivel de BD).
+  - **Toolbar**: fecha, precios DIESEL/REGULAR/PREMIUM (auto-save en `precios_diarios`, **heredados** del día anterior más reciente si hoy no tiene precio propio — ver sesión 2026-07-03), toggle ABREVIADO/COMPLETO, botón **"Corregir fecha"** (mover el día completo a otra fecha, solo si el destino está vacío). **Ya NO existe** el botón REINICIAR DÍA (se quitó por decisión de negocio: nada debe borrar en masa a nivel de BD).
   - **Tabla de Turnos (Editable e Instantánea)**: Celdas de consola, yape, openpay, depósito, pruebas, redondeo y colaborador editables directamente. Auto-guardan en `onBlur` (o al cambiar colaborador) con **refresco silencioso (flicker-free)**. Guarda en `cierres_caja`.
   - **Registro Rápido de Créditos** (modo Abreviado): Turno + Monto S/. → `registro_ventas` (fila con `cantidad_galones = 0`). Se muestran en **4 columnas** (una por turno) con subtotal cada una, sin altura fija (antes era una mini-tabla de 48px con scroll).
   - **Registros de Vales (modo Completo)**: tabla 100% editable en línea, **sin botón "Editar"** — cada celda auto-guarda en `onBlur` (mismo patrón que la Tabla de Turnos). Las filas que vinieron de Registro Rápido (aún con `cantidad_galones = 0` o recién completadas) se resaltan en ámbar; hay un aviso arriba de la tabla con el conteo de pendientes por completar. Al ingresar los galones reales, el importe se recalcula como `galones × precio` (autoritativo, viene del documento/contrato) y se muestra una alerta si difiere del monto rápido original en más de 5 céntimos (tolerancia de redondeo normal).
@@ -53,6 +53,11 @@ metadata:
 5. **"Créditos Rápidos del Día" (modo Abreviado)** rediseñado: pasó de una mini-tabla de altura fija (48px, con scroll) a **4 columnas** (una por turno), cada una con su lista de créditos y subtotal, creciendo libremente en altura.
 6. **"Registros guardados" (modo Completo)** rediseñado: se quitó el flujo "Editar → Guardar/Cancelar" (`editingId`/`editForm`/`startEdit`/`saveEdit`). Ahora la tabla es 100% editable en línea con auto-guardado en `onBlur` (nuevo estado `regInputsMap` + `handleRegInputChange`/`handleRegBlur`), igual patrón que la Tabla de Turnos. Se agregó resaltado ámbar para pendientes, aviso de conteo de pendientes, y alerta de variación vs. monto rápido (tolerancia 5 céntimos).
 7. `npx tsc --noEmit` verificado sin errores tras los cambios.
+
+## Cambios de esta sesión (2026-07-03)
+1. **Precios "continuos" (arrastre de precio)**: `loadDia` ya no exige un registro de `precios_diarios` exacto por fecha. Si la fecha seleccionada no tiene precio propio, se hereda el más reciente anterior (`fecha < seleccionada`, `order desc`, `limit 1`) y se muestra pre-cargado. Al editar un campo de precio con un valor heredado, se **inserta una fila nueva** para la fecha actual (no se pisa la fila histórica) — `precioId` se deja en `null` cuando el precio viene heredado, precisamente para forzar el insert en vez de update. Esto también resuelve el conflicto de la restricción `UNIQUE(fecha)` de cara a la corrección de fecha (punto 2): la mayoría de los días ya no tienen fila propia en `precios_diarios`.
+2. **Botón "Corregir fecha"** agregado junto al selector de fecha: permite mover TODO lo registrado bajo la fecha actual (`registro_ventas`, `cierres_caja`, `precios_diarios`) hacia otra fecha, para el caso de error humano (ej. registrar el cierre del sábado bajo la fecha del domingo por accidente). **Solo se permite si la fecha destino está completamente vacía** en las 3 tablas — si tiene cualquier dato, se bloquea con un aviso y no se fusiona ni se sobrescribe nada (decisión de negocio: la fusión automática es más riesgosa que útil). Función `handleFixDate()` en `VentasDelDiaPage.tsx`.
+3. `npx tsc --noEmit` verificado sin errores tras los cambios.
 
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.

@@ -165,6 +165,11 @@ export default function VentasPage() {
   const [savingReg, setSavingReg] = useState(false)
   const [nuevo, setNuevo] = useState<NuevoReg>({ ...NUEVO_VACIO })
 
+  // Corregir fecha (mover un día completo a otra fecha, solo si el destino está vacío)
+  const [showFixDate, setShowFixDate] = useState(false)
+  const [fixDateTarget, setFixDateTarget] = useState('')
+  const [fixingDate, setFixingDate] = useState(false)
+
   // Inputs editables de los turnos
   const [inputsMap, setInputsMap] = useState<Record<number, ShiftInputs>>({})
 
@@ -239,6 +244,22 @@ export default function VentasPage() {
           .order('created_at'),
       ])
 
+      // Precios: si no hay uno cargado exactamente para esta fecha, se hereda
+      // el más reciente anterior (el precio no cambia todos los días).
+      let preciosData = preciosRes.data
+      let esPrecioHeredado = false
+      if (!preciosData) {
+        const carried = await supabase
+          .from('precios_diarios')
+          .select('*')
+          .lt('fecha', fecha)
+          .order('fecha', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        preciosData = carried.data
+        esPrecioHeredado = !!carried.data
+      }
+
       // Armar mapa turno_id → CierreRow
       const map: Record<number, CierreRow> = {}
       const dbCierres: any[] = (!cierresRes.error && Array.isArray(cierresRes.data)) ? cierresRes.data : []
@@ -252,10 +273,10 @@ export default function VentasPage() {
       }
       setCierresMap(map)
 
-      // Precios del día
-      const pd = preciosRes.data
+      // Precios del día (heredado: no se guarda un id propio hasta que se edite)
+      const pd = preciosData
       if (pd) {
-        setPrecioId(pd.id)
+        setPrecioId(esPrecioHeredado ? null : pd.id)
         setPrecios({
           db5: (pd.precio_db5_centimos / 100).toFixed(2),
           regular: (pd.precio_regular_centimos / 100).toFixed(2),
@@ -279,6 +300,49 @@ export default function VentasPage() {
       if (!silent) setLoadingDia(false)
     }
   }, [fecha])
+
+  // ── Corregir fecha: mover todo lo registrado hoy a otra fecha ──
+  // Solo permitido si el destino no tiene absolutamente ningún dato
+  // (evita fusiones o sobrescrituras silenciosas de información real).
+  async function handleFixDate() {
+    if (!fixDateTarget || fixDateTarget === fecha) return
+    setFixingDate(true)
+    try {
+      const [regCheck, cierreCheck, precioCheck] = await Promise.all([
+        supabase.from('registro_ventas').select('id').eq('fecha', fixDateTarget).limit(1),
+        supabase.from('cierres_caja').select('id').eq('fecha', fixDateTarget).limit(1),
+        supabase.from('precios_diarios').select('id').eq('fecha', fixDateTarget).limit(1),
+      ])
+      const yaTieneDatos =
+        (regCheck.data?.length ?? 0) > 0 ||
+        (cierreCheck.data?.length ?? 0) > 0 ||
+        (precioCheck.data?.length ?? 0) > 0
+
+      if (yaTieneDatos) {
+        alert(
+          `La fecha ${fixDateTarget} ya tiene información registrada. ` +
+          'La corrección de fecha solo puede hacerse hacia un día completamente vacío.'
+        )
+        return
+      }
+
+      const [regErr, cierreErr, precioErr] = await Promise.all([
+        supabase.from('registro_ventas').update({ fecha: fixDateTarget }).eq('fecha', fecha),
+        supabase.from('cierres_caja').update({ fecha: fixDateTarget }).eq('fecha', fecha),
+        supabase.from('precios_diarios').update({ fecha: fixDateTarget }).eq('fecha', fecha),
+      ])
+      const error = regErr.error || cierreErr.error || precioErr.error
+      if (error) throw error
+
+      setShowFixDate(false)
+      setFixDateTarget('')
+      setFecha(fixDateTarget)
+    } catch (err) {
+      alert('Error al corregir la fecha: ' + (err as any).message)
+    } finally {
+      setFixingDate(false)
+    }
+  }
 
   useEffect(() => {
     if (activeTab === 'registro') {
@@ -818,6 +882,40 @@ export default function VentasPage() {
               value={fecha}
               onChange={e => setFecha(e.target.value)}
             />
+
+            {/* Corregir fecha (mover el día completo si se cargó bajo la fecha equivocada) */}
+            {!showFixDate ? (
+              <button
+                className="btn-ghost text-xs py-1 px-2"
+                onClick={() => setShowFixDate(true)}
+                title="Usar si todo el día se registró bajo la fecha equivocada"
+              >
+                Corregir fecha
+              </button>
+            ) : (
+              <div className="flex items-center gap-1.5 rounded border border-app-border bg-slate-50 px-2 py-0.5">
+                <span className="text-[11px] font-semibold text-slate-600">Mover a:</span>
+                <input
+                  type="date"
+                  className="input h-6 w-32 text-xs py-0"
+                  value={fixDateTarget}
+                  onChange={e => setFixDateTarget(e.target.value)}
+                />
+                <button
+                  className="btn bg-primary text-primary-text h-6 px-2 text-[10px]"
+                  disabled={!fixDateTarget || fixDateTarget === fecha || fixingDate}
+                  onClick={handleFixDate}
+                >
+                  {fixingDate ? '…' : 'Confirmar'}
+                </button>
+                <button
+                  className="btn-ghost h-6 px-2 text-[10px]"
+                  onClick={() => { setShowFixDate(false); setFixDateTarget('') }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
 
             {/* Precios Combustible */}
             <div className="flex items-center gap-2 rounded border border-app-border bg-slate-50 px-2.5 py-1">
