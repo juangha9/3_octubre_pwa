@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-01**
+Última actualización: **2026-07-02**
 
 ## Módulos completados
 
@@ -24,10 +24,10 @@ metadata:
   - Turnos, Combustibles, Tanques, Empresas Clientes, Proveedores
   - Sistema — `app_config` editable por `admin_grifo` y `superadmin` (política RLS actualizada en migración `002_app_config_admin_write.sql`, **aplicada con éxito**)
 - **Ventas del Día & Ventas Diarias (Unificados)** ← **CONSTRUIDO Y PERFECCIONADO** (`src/features/admin/ventas/VentasDelDiaPage.tsx`)
-  - **Toolbar**: fecha, precios DIESEL/REGULAR/PREMIUM (auto-save en `precios_diarios`), toggle ABREVIADO/COMPLETO, REINICIAR DÍA (confirm inline, borrado completo de la fecha).
+  - **Toolbar**: fecha, precios DIESEL/REGULAR/PREMIUM (auto-save en `precios_diarios`), toggle ABREVIADO/COMPLETO. **Ya NO existe** el botón REINICIAR DÍA (se quitó por decisión de negocio: nada debe borrar en masa a nivel de BD).
   - **Tabla de Turnos (Editable e Instantánea)**: Celdas de consola, yape, openpay, depósito, pruebas, redondeo y colaborador editables directamente. Auto-guardan en `onBlur` (o al cambiar colaborador) con **refresco silencioso (flicker-free)**. Guarda en `cierres_caja`.
-  - **Registro Rápido de Créditos**: modo Abreviado, registra créditos con solo Turno y Monto S/. → `registro_ventas`, se suman en tiempo real.
-  - **Edición en Línea de Vales**: tabla inferior (modo Completo) agrega/edita transacciones de `registro_ventas` en la misma fila.
+  - **Registro Rápido de Créditos** (modo Abreviado): Turno + Monto S/. → `registro_ventas` (fila con `cantidad_galones = 0`). Se muestran en **4 columnas** (una por turno) con subtotal cada una, sin altura fija (antes era una mini-tabla de 48px con scroll).
+  - **Registros de Vales (modo Completo)**: tabla 100% editable en línea, **sin botón "Editar"** — cada celda auto-guarda en `onBlur` (mismo patrón que la Tabla de Turnos). Las filas que vinieron de Registro Rápido (aún con `cantidad_galones = 0` o recién completadas) se resaltan en ámbar; hay un aviso arriba de la tabla con el conteo de pendientes por completar. Al ingresar los galones reales, el importe se recalcula como `galones × precio` (autoritativo, viene del documento/contrato) y se muestra una alerta si difiere del monto rápido original en más de 5 céntimos (tolerancia de redondeo normal).
   - **Historial Mensual**: pestaña con agrupación de cierres por día, total acumulado del mes, faltantes/sobrantes por turno/día, imprimir reporte. Lee de `cierres_caja`.
 - **Seguimiento (ex Corporativo / Vales)** ← **CONSTRUIDO** (`src/features/admin/corporativo/CorporativoPage.tsx`)
   - CRUD sobre **`registro_ventas`** (la MISMA tabla que usa Ventas → así están "conectados": los vales/créditos de Ventas aparecen aquí).
@@ -44,6 +44,15 @@ metadata:
 6. **Inputs numéricos endurecidos (GLOBAL)**: `useHardenNumberInputs()` en `App.tsx` + CSS. Bloquea teclear `e/E/+/-/*//`, el scroll del ratón no cambia el valor, y se ocultan las flechas (spinners). Aplica a TODO `<input type="number">` actual y futuro.
 7. **Ancho adaptativo**: la raíz de Ventas y Seguimiento ahora usa `flex-1 min-w-0` → las páginas llenan el ancho del monitor (1080p/1440p). Antes solo ocupaban el ancho de su contenido (~medio monitor en 2K).
 8. **Filtros persistidos**: `usePersistedState` (localStorage) recuerda el filtro de mes/tipo/empresa/estado en Seguimiento al cambiar de módulo o recargar.
+
+## Cambios de esta sesión (2026-07-02)
+1. **Botón "REINICIAR DÍA" eliminado** de `VentasDelDiaPage.tsx` (estado `confirmReinicio`, función `handleReinicio` y el JSX del botón). Decisión de negocio: no debe existir un borrado masivo/irreversible a nivel de BD; correcciones puntuales se hacen fila por fila. `BUENAS_PRACTICAS.md` §10.1 actualizado para reflejarlo.
+2. **Rol de experto agregado a `BUENAS_PRACTICAS.md`**: nota al inicio del documento indicando actuar como desarrollador full-stack senior (25+ años) en este proyecto.
+3. **Decisión de negocio — CHEVRON no es "crédito"**: sigue restándose del EFECTIVO FINAL igual que Corporación/Licitaciones/Particulares (es un medio de pago no-efectivo), pero conceptualmente no es un "vale a crédito". No se tocó `calcEfectivoFinal` — ya se comportaba así.
+4. **Decisión de negocio — reconciliación Registro Rápido → Completo**: al completar el detalle real de un registro rápido, el importe se recalcula desde `galones × precio` (autoritativo — así lo exigen los contratos de licitación), **no** se fuerza a mantener el monto rápido original. La variación esperada por redondeo es normal; solo se avisa si supera 5 céntimos.
+5. **"Créditos Rápidos del Día" (modo Abreviado)** rediseñado: pasó de una mini-tabla de altura fija (48px, con scroll) a **4 columnas** (una por turno), cada una con su lista de créditos y subtotal, creciendo libremente en altura.
+6. **"Registros guardados" (modo Completo)** rediseñado: se quitó el flujo "Editar → Guardar/Cancelar" (`editingId`/`editForm`/`startEdit`/`saveEdit`). Ahora la tabla es 100% editable en línea con auto-guardado en `onBlur` (nuevo estado `regInputsMap` + `handleRegInputChange`/`handleRegBlur`), igual patrón que la Tabla de Turnos. Se agregó resaltado ámbar para pendientes, aviso de conteo de pendientes, y alerta de variación vs. monto rápido (tolerancia 5 céntimos).
+7. `npx tsc --noEmit` verificado sin errores tras los cambios.
 
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.

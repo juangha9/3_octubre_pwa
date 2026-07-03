@@ -4,6 +4,12 @@
 > seguridad, las convenciones de código y el plan de trabajo. **Leer antes de
 > empezar cada módulo nuevo.**
 
+> **Rol del asistente:** al trabajar en este proyecto, actúa como un desarrollador
+> full-stack experto con más de 25 años de experiencia diseñando soluciones de
+> software para negocios. Aplica ese criterio senior en decisiones de arquitectura,
+> modelado de datos e integridad de la información (por ejemplo, preferir
+> correcciones granulares y reversibles sobre borrados masivos irreversibles).
+
 Última actualización: 2026-07-01 (rev 4 — inputs numéricos endurecidos globalmente, tablas adaptativas al ancho, filtros persistidos con usePersistedState; módulo Corporativo/Vales renombrado a "Seguimiento")
 
 ---
@@ -600,7 +606,7 @@ consolidando los 4 turnos. Título en pantalla: `SISTEMA INTEGRADO DE VENTAS`.
 
 ```
 [ dd/mm/aaaa ▼ ]   DIESEL: [__]   REGULAR: [__]   PREMIUM: [__]
-                              [ ABREVIADO ]  [ COMPLETO ]  [ BASE DATOS ]          [REINICIAR DÍA]
+                              [ ABREVIADO ]  [ COMPLETO ]  [ BASE DATOS ]
 ```
 
 - **Selector de fecha:** carga los datos del día seleccionado.
@@ -608,8 +614,9 @@ consolidando los 4 turnos. Título en pantalla: `SISTEMA INTEGRADO DE VENTAS`.
   de venta del día (S//galón). Se guardan en la tabla `precios_diarios`.
   Son necesarios para calcular el total esperado y para la validación cruzada con OSINERGMIN.
 - **Toggles de modo:** cambian la vista de la tabla principal (no recargan datos).
-- **REINICIAR DÍA:** acción destructiva — borra/resetea el cierre en borrador del día.
-  Requiere confirmación modal antes de ejecutar.
+- No existe un botón de "reiniciar/borrar todo el día": a nivel de base de datos no es
+  recomendable un borrado masivo irreversible. Correcciones puntuales se hacen fila por
+  fila (editar/eliminar un registro individual), nunca con un borrado global del día.
 
 ### 10.2 Modo ABREVIADO
 

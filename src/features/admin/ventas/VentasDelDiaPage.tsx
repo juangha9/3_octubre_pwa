@@ -95,7 +95,8 @@ interface CierreRowCalculated {
   faltante_sobrante_centimos: number | null
 }
 
-interface EditRowState {
+// Buffer editable en línea para cada fila de `registro_ventas` (modo Completo)
+interface RegistroInputs {
   empresa_id: string
   numero: string
   placa: string
@@ -162,7 +163,6 @@ export default function VentasPage() {
   const [loadingDia, setLoadingDia] = useState(true)
   const [savingPrecios, setSavingPrecios] = useState(false)
   const [savingReg, setSavingReg] = useState(false)
-  const [confirmReinicio, setConfirmReinicio] = useState(false)
   const [nuevo, setNuevo] = useState<NuevoReg>({ ...NUEVO_VACIO })
 
   // Inputs editables de los turnos
@@ -173,9 +173,9 @@ export default function VentasPage() {
   const [quickMonto, setQuickMonto] = useState('')
   const [savingQuick, setSavingQuick] = useState(false)
 
-  // Edición en línea para registros (Completo)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<EditRowState | null>(null)
+  // Edición en línea para registros (Completo) — cada fila es editable directamente,
+  // sin un modo "editar" explícito, igual que la Tabla de Turnos de arriba.
+  const [regInputsMap, setRegInputsMap] = useState<Record<string, RegistroInputs>>({})
 
   // Catálogos de referencia
   const [turnos, setTurnos] = useState<Turno[]>([])
@@ -594,53 +594,64 @@ export default function VentasPage() {
     }
   }
 
-  // ── Iniciar edición de una fila de venta (Completo) ────────────
-  const startEdit = (r: RegistroRow) => {
-    setEditingId(r.id)
-    setEditForm({
-      empresa_id: r.empresa_id ?? '',
-      numero: r.numero ?? '',
-      placa: r.placa ?? '',
-      serie: r.serie ?? '',
-      conductor: r.conductor ?? '',
-      dni_conductor: r.dni_conductor ?? '',
-      turno_id: String(r.turno_id),
-      tipo_combustible: r.tipo_combustible,
-      cantidad_galones: String(r.cantidad_galones),
-      importe: (r.importe_centimos / 100).toFixed(2),
-    })
+  // ── Reconstruir buffer editable de registros (reactivo a `registros`) ──
+  useEffect(() => {
+    const map: Record<string, RegistroInputs> = {}
+    for (const r of registros) {
+      map[r.id] = {
+        empresa_id: r.empresa_id ?? '',
+        numero: r.numero ?? '',
+        placa: r.placa ?? '',
+        serie: r.serie ?? '',
+        conductor: r.conductor ?? '',
+        dni_conductor: r.dni_conductor ?? '',
+        turno_id: String(r.turno_id),
+        tipo_combustible: r.tipo_combustible,
+        cantidad_galones: String(r.cantidad_galones),
+        importe: (r.importe_centimos / 100).toFixed(2),
+      }
+    }
+    setRegInputsMap(map)
+  }, [registros])
+
+  const handleRegInputChange = (id: string, field: keyof RegistroInputs, val: string) => {
+    setRegInputsMap(prev => ({
+      ...prev,
+      [id]: { ...prev[id], [field]: val },
+    }))
   }
 
-  // ── Guardar edición de una fila de venta (Completo) ────────────
-  const saveEdit = async (id: string) => {
-    if (!editForm) return
-    const galones = parseFloat(editForm.cantidad_galones) || 0
-    let precioUnit = precioDiario(editForm.tipo_combustible)
-    
+  // ── Guardar en línea una fila de venta (Completo) — sin botón "Editar" ──
+  const handleRegBlur = async (id: string) => {
+    const inputs = regInputsMap[id]
+    if (!inputs) return
+    const galones = parseFloat(inputs.cantidad_galones) || 0
+    let precioUnit = precioDiario(inputs.tipo_combustible)
+
     let importeCentimos = 0
     if (galones === 0) {
-      importeCentimos = toCentimos(editForm.importe)
+      importeCentimos = toCentimos(inputs.importe)
       precioUnit = 0
     } else {
       importeCentimos = Math.round(galones * precioUnit)
     }
 
-    const emp = empresas.find(x => x.id === editForm.empresa_id)
+    const emp = empresas.find(x => x.id === inputs.empresa_id)
     const tipoAtencion = emp ? emp.tipo : 'particular'
 
     try {
       const { error } = await supabase
         .from('registro_ventas')
         .update({
-          turno_id: parseInt(editForm.turno_id),
-          empresa_id: editForm.empresa_id || null,
+          turno_id: parseInt(inputs.turno_id),
+          empresa_id: inputs.empresa_id || null,
           tipo_atencion: tipoAtencion,
-          numero: editForm.numero || null,
-          placa: editForm.placa || null,
-          serie: editForm.serie || null,
-          conductor: editForm.conductor || null,
-          dni_conductor: editForm.dni_conductor || null,
-          tipo_combustible: editForm.tipo_combustible,
+          numero: inputs.numero || null,
+          placa: inputs.placa || null,
+          serie: inputs.serie || null,
+          conductor: inputs.conductor || null,
+          dni_conductor: inputs.dni_conductor || null,
+          tipo_combustible: inputs.tipo_combustible,
           cantidad_galones: galones,
           precio_unit_centimos: precioUnit,
           importe_centimos: importeCentimos,
@@ -648,9 +659,6 @@ export default function VentasPage() {
         .eq('id', id)
 
       if (error) throw error
-
-      setEditingId(null)
-      setEditForm(null)
       loadDia(true) // Refresco silencioso
     } catch (err) {
       alert('Error al guardar cambios: ' + (err as any).message)
@@ -662,24 +670,6 @@ export default function VentasPage() {
     if (!confirm('¿Seguro que desea eliminar este registro?')) return
     await supabase.from('registro_ventas').delete().eq('id', id)
     loadDia(true) // Refresco silencioso
-  }
-
-  // ── Reiniciar día ─────────────────────────────────────────────
-  async function handleReinicio() {
-    setConfirmReinicio(false)
-    setLoadingDia(true)
-    try {
-      await supabase.from('registro_ventas').delete().eq('fecha', fecha)
-      if (precioId) {
-        await supabase.from('precios_diarios').delete().eq('id', precioId)
-      }
-      await supabase.from('cierres_caja').delete().eq('fecha', fecha)
-      await loadDia(false)
-    } catch (err) {
-      console.error('Error al reiniciar el día:', err)
-    } finally {
-      setLoadingDia(false)
-    }
   }
 
   // ── CÁLCULO REACTIVO: Créditos por turno (desde registros) ────
@@ -852,31 +842,6 @@ export default function VentasPage() {
               ))}
               {savingPrecios && (
                 <span className="animate-pulse text-[10px] text-app-muted">guardando…</span>
-              )}
-            </div>
-
-            {/* Reiniciar Día */}
-            <div className="ml-auto">
-              {!confirmReinicio ? (
-                <button className="btn-danger text-xs py-1 px-2" onClick={() => setConfirmReinicio(true)}>
-                  REINICIAR DÍA
-                </button>
-              ) : (
-                <div className="flex items-center gap-1.5 rounded border border-red-300 bg-red-50 px-2 py-0.5">
-                  <span className="text-[11px] font-semibold text-red-700">¿Borrar registros de esta fecha?</span>
-                  <button
-                    className="btn bg-red-600 hover:bg-red-700 text-white py-0.5 px-2 text-[10px]"
-                    onClick={handleReinicio}
-                  >
-                    Sí, borrar
-                  </button>
-                  <button
-                    className="btn-ghost py-0.5 px-2 text-[10px]"
-                    onClick={() => setConfirmReinicio(false)}
-                  >
-                    No
-                  </button>
-                </div>
               )}
             </div>
           </>
@@ -1197,42 +1162,42 @@ export default function VentasPage() {
                       </button>
                     </div>
 
-                    {/* Mini tabla de créditos rápidos */}
+                    {/* Créditos rápidos del día, agrupados por turno */}
                     <div className="card md:col-span-2 space-y-2">
                       <h3 className="text-sm font-bold text-slate-700 border-b pb-1.5">Créditos Rápidos del Día</h3>
-                      <div className="max-h-48 overflow-y-auto border border-app-border rounded">
-                        <table className="table-excel">
-                          <thead>
-                            <tr>
-                              <th style={{ width: 80 }}>TURNO</th>
-                              <th>MONTO S/.</th>
-                              <th style={{ width: 100 }}>ACCIONES</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {registrosRapidos.map(r => (
-                              <tr key={r.id}>
-                                <td className="text-center text-xs font-semibold">{r.turno_id}</td>
-                                <td className="font-mono text-xs font-bold text-slate-800">{fs(r.importe_centimos)}</td>
-                                <td className="text-center">
-                                  <button
-                                    onClick={() => deleteRegistro(r.id)}
-                                    className="text-red-600 hover:text-red-800 text-xs font-semibold"
-                                  >
-                                    Eliminar
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                            {registrosRapidos.length === 0 && (
-                              <tr>
-                                <td colSpan={3} className="py-6 text-center text-xs text-app-muted italic">
-                                  No hay créditos rápidos registrados hoy
-                                </td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                        {(turnos.length > 0 ? turnos : [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] as any[]).map((t, idx) => {
+                          const regsTurno = registrosRapidos.filter(r => r.turno_id === t.id)
+                          const subtotal = regsTurno.reduce((s, r) => s + r.importe_centimos, 0)
+                          return (
+                            <div key={t.id} className="flex flex-col rounded border border-app-border overflow-hidden">
+                              <div className="bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700 text-center">
+                                Turno {idx + 1}
+                              </div>
+                              <div className="flex-1 divide-y divide-app-border">
+                                {regsTurno.map(r => (
+                                  <div key={r.id} className="flex items-center justify-between gap-1 px-2 py-1">
+                                    <span className="font-mono text-xs font-bold text-slate-800">{fs(r.importe_centimos)}</span>
+                                    <button
+                                      onClick={() => deleteRegistro(r.id)}
+                                      className="text-red-600 hover:text-red-800 text-[10px] font-semibold"
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                ))}
+                                {regsTurno.length === 0 && (
+                                  <div className="px-2 py-4 text-center text-[11px] text-app-muted italic">
+                                    Sin registros
+                                  </div>
+                                )}
+                              </div>
+                              <div className="border-t border-app-border bg-slate-50 px-2 py-1 text-right text-xs font-bold text-slate-700">
+                                {fs(subtotal)}
+                              </div>
+                            </div>
+                          )
+                        })}
                       </div>
                     </div>
                   </div>
@@ -1240,7 +1205,13 @@ export default function VentasPage() {
 
                 {/* === MODO COMPLETO: Registro Completo de Vales y Transacciones === */}
                 {modo === 'completo' && (
-                  <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
+                  <div className="space-y-2">
+                    {registrosRapidos.length > 0 && (
+                      <div className="rounded border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800">
+                        {registrosRapidos.length} registro{registrosRapidos.length > 1 ? 's' : ''} rápido{registrosRapidos.length > 1 ? 's' : ''} pendiente{registrosRapidos.length > 1 ? 's' : ''} de completar con el detalle del vale/factura (resaltado{registrosRapidos.length > 1 ? 's' : ''} abajo)
+                      </div>
+                    )}
+                    <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
                     <table className="table-excel">
                       <thead>
                         <tr>
@@ -1383,160 +1354,148 @@ export default function VentasPage() {
                           <td className="text-center">—</td>
                         </tr>
 
-                        {/* Registros guardados */}
+                        {/* Registros guardados — editables en línea, sin botón "Editar" */}
                         {registros.map(r => {
-                          const isEditing = editingId === r.id
+                          const inputs = regInputsMap[r.id]
+                          if (!inputs) return null
+
                           const precioRef = precioDiario(r.tipo_combustible)
                           const variacion = Math.round((precioRef - r.precio_unit_centimos) * r.cantidad_galones)
-
-                          if (isEditing && editForm) {
-                            return (
-                              <tr key={r.id} className="bg-amber-50">
-                                <td className="text-xs text-amber-800 font-semibold">{fecha}</td>
-                                {/* Cliente */}
-                                <td>
-                                  <select
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.empresa_id}
-                                    onChange={e => setEditForm({ ...editForm, empresa_id: e.target.value })}
-                                  >
-                                    <option value="">Buscar…</option>
-                                    {empresas.map(emp => (
-                                      <option key={emp.id} value={emp.id}>{emp.nombre}</option>
-                                    ))}
-                                  </select>
-                                </td>
-                                {/* Vale/Número */}
-                                <td>
-                                  <input
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.numero}
-                                    onChange={e => setEditForm({ ...editForm, numero: e.target.value })}
-                                  />
-                                </td>
-                                {/* Placa */}
-                                <td>
-                                  <input
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.placa}
-                                    onChange={e => setEditForm({ ...editForm, placa: e.target.value })}
-                                    style={{ textTransform: 'uppercase' }}
-                                  />
-                                </td>
-                                {/* Serie */}
-                                <td>
-                                  <input
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.serie}
-                                    onChange={e => setEditForm({ ...editForm, serie: e.target.value })}
-                                  />
-                                </td>
-                                {/* Conductor */}
-                                <td>
-                                  <input
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.conductor}
-                                    onChange={e => setEditForm({ ...editForm, conductor: e.target.value })}
-                                  />
-                                </td>
-                                {/* DNI */}
-                                <td>
-                                  <input
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.dni_conductor}
-                                    onChange={e => setEditForm({ ...editForm, dni_conductor: e.target.value })}
-                                    maxLength={8}
-                                  />
-                                </td>
-                                {/* Turno */}
-                                <td>
-                                  <select
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.turno_id}
-                                    onChange={e => setEditForm({ ...editForm, turno_id: e.target.value })}
-                                  >
-                                    {turnos.map((t, i) => (
-                                      <option key={t.id} value={String(t.id)}>{i + 1}</option>
-                                    ))}
-                                  </select>
-                                </td>
-                                {/* Producto */}
-                                <td>
-                                  <select
-                                    className="input py-0 h-6 text-xs w-full bg-white border-amber-300"
-                                    value={editForm.tipo_combustible}
-                                    onChange={e => setEditForm({ ...editForm, tipo_combustible: e.target.value })}
-                                  >
-                                    {combustibles.map(comb => (
-                                      <option key={comb.codigo} value={comb.codigo}>{comb.codigo}</option>
-                                    ))}
-                                  </select>
-                                </td>
-                                {/* Galones */}
-                                <td>
-                                  <input
-                                    type="number"
-                                    step="0.001"
-                                    className="input py-0 h-6 text-xs w-full text-right font-mono bg-white border-amber-300"
-                                    value={editForm.cantidad_galones}
-                                    onChange={e => setEditForm({ ...editForm, cantidad_galones: e.target.value })}
-                                  />
-                                </td>
-                                {/* Importe (Editable solo si galones = 0, sino calculado) */}
-                                <td>
-                                  {parseFloat(editForm.cantidad_galones) === 0 ? (
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      className="input py-0 h-6 text-xs w-full text-right font-mono bg-white border-amber-300"
-                                      value={editForm.importe}
-                                      onChange={e => setEditForm({ ...editForm, importe: e.target.value })}
-                                    />
-                                  ) : (
-                                    <span className="block text-right font-mono text-xs font-medium px-2 text-slate-700">
-                                      {fs(Math.round((parseFloat(editForm.cantidad_galones) || 0) * precioDiario(editForm.tipo_combustible)))}
-                                    </span>
-                                  )}
-                                </td>
-                                <td style={{ background: '#fff7ed' }}>—</td>
-                                {/* Acciones Guardar / Cancelar */}
-                                <td className="text-center space-x-1.5">
-                                  <button
-                                    onClick={() => saveEdit(r.id)}
-                                    className="text-green-600 hover:text-green-800 text-xs font-bold"
-                                  >
-                                    Guardar
-                                  </button>
-                                  <button
-                                    onClick={() => { setEditingId(null); setEditForm(null) }}
-                                    className="text-slate-500 hover:text-slate-700 text-xs font-semibold"
-                                  >
-                                    Cancel
-                                  </button>
-                                </td>
-                              </tr>
-                            )
-                          }
+                          const cellStyle = "input py-0 h-6 text-xs w-full bg-transparent border-0 focus:ring-1 focus:ring-primary focus:bg-white"
+                          const galonesEditados = parseFloat(inputs.cantidad_galones) || 0
 
                           return (
-                            <tr key={r.id}>
-                              <td className="text-xs">{fecha}</td>
-                              <td className="text-xs truncate" style={{ maxWidth: 140 }}>
-                                {r.empresa_nombre ?? '—'}
+                            <tr key={r.id} className={r.cantidad_galones === 0 ? 'bg-amber-50/60' : undefined}>
+                              <td className="text-xs text-app-muted">{fecha}</td>
+                              {/* Cliente */}
+                              <td>
+                                <select
+                                  className={cellStyle}
+                                  value={inputs.empresa_id}
+                                  onChange={e => handleRegInputChange(r.id, 'empresa_id', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                >
+                                  <option value="">Buscar…</option>
+                                  {empresas.map(emp => (
+                                    <option key={emp.id} value={emp.id}>{emp.nombre}</option>
+                                  ))}
+                                </select>
                               </td>
-                              <td className="text-xs">{r.numero ?? '—'}</td>
-                              <td className="text-xs">{r.placa ?? '—'}</td>
-                              <td className="text-xs">{r.serie ?? '—'}</td>
-                              <td className="text-xs">{r.conductor ?? '—'}</td>
-                              <td className="text-xs">{r.dni_conductor ?? '—'}</td>
-                              <td className="text-center text-xs">{r.turno_id}</td>
-                              <td className="text-xs font-medium">
-                                {r.cantidad_galones === 0 ? 'REG. RÁPIDO' : r.tipo_combustible}
+                              {/* Vale/Número */}
+                              <td>
+                                <input
+                                  className={cellStyle}
+                                  value={inputs.numero}
+                                  onChange={e => handleRegInputChange(r.id, 'numero', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                />
                               </td>
-                              <td className="text-right font-mono text-xs">
-                                {r.cantidad_galones > 0 ? r.cantidad_galones.toFixed(3) : '—'}
+                              {/* Placa */}
+                              <td>
+                                <input
+                                  className={cellStyle}
+                                  value={inputs.placa}
+                                  onChange={e => handleRegInputChange(r.id, 'placa', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                  style={{ textTransform: 'uppercase' }}
+                                />
                               </td>
-                              <td className="text-right font-mono text-xs font-semibold text-slate-700">{fs(r.importe_centimos)}</td>
+                              {/* Serie */}
+                              <td>
+                                <input
+                                  className={cellStyle}
+                                  value={inputs.serie}
+                                  onChange={e => handleRegInputChange(r.id, 'serie', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                />
+                              </td>
+                              {/* Conductor */}
+                              <td>
+                                <input
+                                  className={cellStyle}
+                                  value={inputs.conductor}
+                                  onChange={e => handleRegInputChange(r.id, 'conductor', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                />
+                              </td>
+                              {/* DNI */}
+                              <td>
+                                <input
+                                  className={cellStyle}
+                                  value={inputs.dni_conductor}
+                                  onChange={e => handleRegInputChange(r.id, 'dni_conductor', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                  maxLength={8}
+                                />
+                              </td>
+                              {/* Turno */}
+                              <td>
+                                <select
+                                  className={cellStyle}
+                                  value={inputs.turno_id}
+                                  onChange={e => handleRegInputChange(r.id, 'turno_id', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                >
+                                  {turnos.map((t, i) => (
+                                    <option key={t.id} value={String(t.id)}>{i + 1}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              {/* Producto */}
+                              <td>
+                                <select
+                                  className={cellStyle}
+                                  value={inputs.tipo_combustible}
+                                  onChange={e => handleRegInputChange(r.id, 'tipo_combustible', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                >
+                                  {r.cantidad_galones === 0 && <option value="">—</option>}
+                                  {combustibles.map(comb => (
+                                    <option key={comb.codigo} value={comb.codigo}>{comb.codigo}</option>
+                                  ))}
+                                </select>
+                              </td>
+                              {/* Galones */}
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.001"
+                                  className={`${cellStyle} text-right font-mono`}
+                                  value={inputs.cantidad_galones}
+                                  onChange={e => handleRegInputChange(r.id, 'cantidad_galones', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                />
+                              </td>
+                              {/* Importe (Editable solo si galones = 0, sino calculado) */}
+                              <td>
+                                {galonesEditados === 0 ? (
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    className={`${cellStyle} text-right font-mono`}
+                                    value={inputs.importe}
+                                    onChange={e => handleRegInputChange(r.id, 'importe', e.target.value)}
+                                    onBlur={() => handleRegBlur(r.id)}
+                                  />
+                                ) : (
+                                  <>
+                                    <span className="block text-right font-mono text-xs font-medium px-2 text-slate-700">
+                                      {fs(Math.round(galonesEditados * precioDiario(inputs.tipo_combustible)))}
+                                    </span>
+                                    {r.cantidad_galones === 0 && (() => {
+                                      const computado = Math.round(galonesEditados * precioDiario(inputs.tipo_combustible))
+                                      const diff = computado - r.importe_centimos
+                                      // Tolerancia de redondeo normal (galones con 3 decimales × precio con 2)
+                                      if (Math.abs(diff) <= 5) return null
+                                      return (
+                                        <span className="block text-right text-[10px] text-amber-600 px-2">
+                                          rápido: {fs(r.importe_centimos)} ({diff > 0 ? '+' : ''}{fs(diff)})
+                                        </span>
+                                      )
+                                    })()}
+                                  </>
+                                )}
+                              </td>
                               <td
                                 className="text-right font-mono text-xs font-semibold"
                                 style={{
@@ -1546,13 +1505,7 @@ export default function VentasPage() {
                               >
                                 {r.cantidad_galones > 0 ? fs(Math.abs(variacion)) : '—'}
                               </td>
-                              <td className="text-center space-x-2">
-                                <button
-                                  onClick={() => startEdit(r)}
-                                  className="text-blue-600 hover:text-blue-800 text-xs font-semibold"
-                                >
-                                  Editar
-                                </button>
+                              <td className="text-center">
                                 <button
                                   onClick={() => deleteRegistro(r.id)}
                                   className="text-red-600 hover:text-red-800 text-xs font-semibold"
@@ -1573,6 +1526,7 @@ export default function VentasPage() {
                         )}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
               </>
