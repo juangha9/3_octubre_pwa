@@ -15,6 +15,9 @@ dist-ssr/
 .dev.vars
 supabase/functions/.env
 
+# Supabase CLI (estado local, no subir)
+supabase/.temp/
+
 # Editor
 .vscode/
 .idea/

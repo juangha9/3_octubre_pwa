@@ -1,0 +1,8 @@
+project_id = "acvavpzdeichdvsgblcn"
+
+# Única función OSINERGMIN: la usa el cron (x-cron-secret) Y el botón manual
+# (superadmin). Valida el rol internamente y responde el preflight OPTIONS del
+# navegador; por eso se desactiva verify_jwt del gateway (si no, el preflight
+# CORS se rechaza).
+[functions.osinergmin-cron]
+verify_jwt = false

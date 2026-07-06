@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
 
-export default function HomePage() {
+export default function HomePage({ base = '' }: { base?: string }) {
   const navigate = useNavigate()
   const { profile } = useAuth()
   const [now, setNow] = useState(new Date())
@@ -44,14 +44,14 @@ export default function HomePage() {
           iconBg="bg-success"
           title="Cierre de Caja"
           subtitle="Conteo de efectivo y cierre de turno"
-          onClick={() => navigate('/cierre')}
+          onClick={() => navigate(`${base}/cierre`)}
         />
         <OperationCard
           icon="📏"
           iconBg="bg-primary"
           title="Varillaje"
           subtitle="Medición de tanques de combustible"
-          onClick={() => navigate('/varillaje')}
+          onClick={() => navigate(`${base}/varillaje`)}
         />
       </div>
 
@@ -61,12 +61,16 @@ export default function HomePage() {
         <span>{hora}</span>
       </div>
 
-      <button
-        onClick={() => supabase.auth.signOut()}
-        className="btn-ghost mt-6 text-xs"
-      >
-        Cerrar sesión
-      </button>
+      {/* El superadmin (base != '') cierra sesión con su propio botón "Salir"
+          de la barra del admin, así que aquí se oculta para no cerrar su sesión. */}
+      {!base && (
+        <button
+          onClick={() => supabase.auth.signOut()}
+          className="btn-ghost mt-6 text-xs"
+        >
+          Cerrar sesión
+        </button>
+      )}
     </div>
   )
 }

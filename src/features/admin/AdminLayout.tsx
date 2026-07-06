@@ -1,26 +1,28 @@
-import { Routes, Route, NavLink } from 'react-router-dom'
+import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/features/auth/useAuth'
 import VentasPage from './ventas/VentasDelDiaPage'
 import CorporativoPage from './corporativo/CorporativoPage'
+import ComprasPage from './compras/ComprasPage'
 import ConfiguracionPage from './configuracion/ConfiguracionPage'
+import OsinergminPage from './osinergmin/OsinergminPage'
+import GriferoLayout from '@/features/grifero/GriferoLayout'
 
-function Placeholder({ title }: { title: string }) {
-  return (
-    <div className="flex flex-1 items-center justify-center">
-      <p className="text-app-muted">{title} — en construcción</p>
-    </div>
-  )
-}
-
+// `soloSuperadmin`: opciones del grifero visibles únicamente para el superadmin.
 const NAV_ITEMS = [
   { to: '/', label: 'Ventas', end: true },
   { to: '/seguimiento', label: 'Seguimiento' },
   { to: '/compras', label: 'Compras' },
+  { to: '/grifero', label: 'Grifero', soloSuperadmin: true },
   { to: '/osinergmin', label: 'OSINERGMIN' },
   { to: '/configuracion', label: 'Configuración' },
 ]
 
 export default function AdminLayout() {
+  const { role } = useAuth()
+  const esSuperadmin = role === 'superadmin'
+  const navItems = NAV_ITEMS.filter((item) => esSuperadmin || !item.soloSuperadmin)
+
   async function handleLogout() {
     await supabase.auth.signOut()
   }
@@ -30,7 +32,7 @@ export default function AdminLayout() {
       {/* Top nav */}
       <header className="flex items-center gap-1 border-b border-app-border bg-white px-4 py-1.5 shadow-sm">
         <span className="mr-3 text-sm font-semibold text-primary-text">Sistema Grifo</span>
-        {NAV_ITEMS.map((item) => (
+        {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -59,9 +61,23 @@ export default function AdminLayout() {
         <Routes>
           <Route path="/" element={<VentasPage />} />
           <Route path="/seguimiento" element={<CorporativoPage />} />
-          <Route path="/compras" element={<Placeholder title="Compras de Combustible" />} />
-          <Route path="/osinergmin" element={<Placeholder title="OSINERGMIN" />} />
+          <Route path="/compras" element={<ComprasPage />} />
+          {/* App del grifero embebida, idéntica a como la ve el grifero.
+              Su navegación interna usa base="/grifero". */}
+          {esSuperadmin && (
+            <Route
+              path="/grifero/*"
+              element={
+                <div className="h-full w-full overflow-auto">
+                  <GriferoLayout base="/grifero" />
+                </div>
+              }
+            />
+          )}
+          <Route path="/osinergmin" element={<OsinergminPage />} />
           <Route path="/configuracion" element={<ConfiguracionPage />} />
+          {/* URL heredada de otro rol que no coincide → volver a Ventas */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>

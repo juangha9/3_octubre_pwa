@@ -4,8 +4,16 @@ import type { EmpresaCliente } from '@/types'
 import { SectionHeader, AcBadge, RowActions, Field, ModalActions, Loading, ModalBox } from './_helpers'
 
 type Form = { nombre: string; ruc: string; tipo: string; contacto: string }
-const INIT: Form = { nombre: '', ruc: '', tipo: 'corporacion', contacto: '' }
-const TIPOS = ['corporacion', 'licitacion', 'chevron', 'particular']
+// El VALOR debe coincidir con el check constraint de empresas_clientes.tipo
+// ('corporativo', no 'corporacion'). La etiqueta es solo para mostrar.
+const TIPOS: { value: string; label: string }[] = [
+  { value: 'corporativo', label: 'Corporación' },
+  { value: 'licitacion', label: 'Licitación' },
+  { value: 'chevron', label: 'Chevron' },
+  { value: 'particular', label: 'Particular' },
+]
+const TIPO_LABEL = (t: string) => TIPOS.find((x) => x.value === t)?.label ?? t
+const INIT: Form = { nombre: '', ruc: '', tipo: 'corporativo', contacto: '' }
 
 export default function EmpresasSection() {
   const [rows, setRows] = useState<EmpresaCliente[]>([])
@@ -76,7 +84,7 @@ export default function EmpresasSection() {
                 <td className="font-medium">{e.nombre}</td>
                 <td className="font-mono text-xs">{e.ruc ?? '—'}</td>
                 <td>
-                  <span className="badge-primary capitalize">{e.tipo}</span>
+                  <span className="badge-primary">{TIPO_LABEL(e.tipo)}</span>
                 </td>
                 <td>{e.contacto ?? '—'}</td>
                 <td><AcBadge v={e.activo} /></td>
@@ -127,12 +135,12 @@ export default function EmpresasSection() {
               </Field>
               <Field label="Tipo" className="flex-1">
                 <select
-                  className="input capitalize"
+                  className="input"
                   value={form.tipo}
                   onChange={(e) => setForm({ ...form, tipo: e.target.value })}
                 >
                   {TIPOS.map((t) => (
-                    <option key={t} value={t} className="capitalize">{t}</option>
+                    <option key={t.value} value={t.value}>{t.label}</option>
                   ))}
                 </select>
               </Field>

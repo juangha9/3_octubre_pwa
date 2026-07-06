@@ -29,6 +29,40 @@ export interface Tanque {
   tipo_combustible_codigo: string
   capacidad_galones: number | null
   activo: boolean
+  layout_fila: number | null
+  layout_columna: number | null
+}
+
+export interface TanqueAforo {
+  id: string
+  tanque_id: number
+  altura_cm: number
+  volumen_galones: number
+}
+
+export interface VarillajeLectura {
+  id: string
+  tanque_id: number
+  fecha: string
+  tipo: 'cambio_turno' | 'control_osinergmin'
+  turno_id: number | null
+  colaborador_id: string
+  altura_cm: number
+  volumen_galones: number
+  notas: string | null
+  created_at: string
+}
+
+// Fila de `fn_stock_actual()` (RPC): última lectura de varillaje por tanque
+// activo, en galones. Solo la puede consultar admin+ (los galones son dato de
+// inventario; el grifero nunca los ve). Alimenta el "stock actual" del Cotizador.
+export interface VarillajeStockRow {
+  tanque_id: number
+  tanque_nombre: string
+  tipo_combustible_codigo: string
+  altura_cm: number
+  volumen_galones: number
+  medido_en: string
 }
 
 export interface PrecioDiario {
@@ -53,6 +87,7 @@ export interface CierreCaja {
   serafinado_centimos: number
   redondeo_centimos: number
   contaminacion_centimos: number
+  dscto_vales_centimos: number
   total_consola_centimos: number | null
   diferencia_centimos: number | null
   entregado_grifero_centimos: number | null
@@ -128,6 +163,46 @@ export interface Proveedor {
   telefono: string | null
   activo: boolean
   created_at: string
+}
+
+// ─── Registro de Compras (modelo cabecera + líneas + fletes) ──────────
+// Una compra puede traer 1-3 productos (líneas) y hasta 3 fletes (distintos
+// transportistas), cada flete pagado/pendiente y con a qué productos aplica.
+// El precio por galón lleva 4 decimales (como el Excel), por eso NO va en
+// céntimos sino en soles `numeric(12,4)`; los montos (flete) sí en céntimos.
+export interface Compra {
+  id: string
+  fecha: string
+  proveedor_id: string | null
+  notas: string | null
+  registrado_por: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CompraLinea {
+  id: string
+  compra_id: string
+  tipo_combustible: string
+  galones: number
+  precio_gl: number // soles, 4 decimales
+}
+
+export interface CompraFlete {
+  id: string
+  compra_id: string
+  transportista: string | null
+  precio_gl: number // tarifa de flete por galón (soles, 4 dec). Total = precio_gl × galones aplicables
+  aplica_a: string[] | null // códigos de combustible; null/vacío = todos
+  estado_pago: 'pagado' | 'pendiente'
+  fecha_pago: string | null
+}
+
+// Compra con sus relaciones embebidas (PostgREST) para la tabla del módulo.
+export interface CompraConDetalle extends Compra {
+  compra_lineas: CompraLinea[]
+  compra_fletes: CompraFlete[]
+  proveedores: { nombre: string } | null
 }
 
 export interface AppConfig {

@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { formatSoles, toCentimos } from '@/lib/money'
 import { hoyLocal } from '@/lib/date'
 import { usePersistedState } from '@/lib/usePersistedState'
+import MultiSelectDropdown from '@/components/MultiSelectDropdown'
 import type { EmpresaCliente, Turno, TipoCombustible } from '@/types'
 
 // ─── Tipos ────────────────────────────────────────────────────────
@@ -60,8 +61,8 @@ interface FormState {
 }
 
 type Tab = 'registros' | 'resumen'
-type FiltroTipo = 'todos' | 'corporativo' | 'licitacion' | 'particular' | 'chevron'
 type FiltroEstado = 'todos' | 'pendiente' | 'pagado'
+type ModoFecha = 'mes' | 'dia'
 
 const TIPOS_ATENCION = ['corporativo', 'licitacion', 'particular', 'chevron'] as const
 const TIPOS_DOC = ['vale', 'factura', 'boleta', 'nota_credito'] as const
@@ -109,9 +110,11 @@ const fs = (v: number | null | undefined) => v != null ? formatSoles(v) : '—'
 export default function CorporativoPage() {
   const [tab, setTab] = useState<Tab>('registros')
   // Filtros persistidos: se recuerdan al cambiar de módulo o recargar.
+  const [modoFecha, setModoFecha] = usePersistedState<ModoFecha>('seguimiento.modoFecha', 'mes')
   const [mes, setMes] = usePersistedState('seguimiento.mes', getMes)
-  const [filtroTipo, setFiltroTipo] = usePersistedState<FiltroTipo>('seguimiento.filtroTipo', 'todos')
-  const [filtroEmpresa, setFiltroEmpresa] = usePersistedState('seguimiento.filtroEmpresa', '')
+  const [dia, setDia] = usePersistedState('seguimiento.dia', hoyLocal)
+  const [filtroTipos, setFiltroTipos] = usePersistedState<string[]>('seguimiento.filtroTipos', [])
+  const [filtroEmpresas, setFiltroEmpresas] = usePersistedState<string[]>('seguimiento.filtroEmpresas', [])
   const [filtroEstado, setFiltroEstado] = usePersistedState<FiltroEstado>('seguimiento.filtroEstado', 'todos')
 
   const [rows, setRows] = useState<RegistroRow[]>([])
@@ -141,13 +144,19 @@ export default function CorporativoPage() {
     })
   }, [])
 
-  // Carga registros del mes seleccionado
-  async function loadMes() {
+  // Carga registros del periodo seleccionado (mes completo o un día puntual)
+  async function loadDatos() {
     setLoading(true)
-    const [y, m] = mes.split('-')
-    const from = `${y}-${m}-01`
-    const lastDay = new Date(+y, +m, 0).getDate()
-    const to = `${y}-${m}-${String(lastDay).padStart(2, '0')}`
+    let from: string, to: string
+    if (modoFecha === 'dia') {
+      from = dia
+      to = dia
+    } else {
+      const [y, m] = mes.split('-')
+      from = `${y}-${m}-01`
+      const lastDay = new Date(+y, +m, 0).getDate()
+      to = `${y}-${m}-${String(lastDay).padStart(2, '0')}`
+    }
 
     try {
       const [regRes, precRes] = await Promise.all([
@@ -181,13 +190,13 @@ export default function CorporativoPage() {
       for (const p of (Array.isArray(precRes.data) ? precRes.data : [])) pm[p.fecha] = p
       setPreciosMap(pm)
     } catch (err) {
-      console.error('Error al cargar registros del mes:', err)
+      console.error('Error al cargar registros:', err)
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { loadMes() }, [mes]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadDatos() }, [modoFecha, mes, dia]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function calcVariacion(row: RegistroRow): number | null {
     const precioDelDia = getPrecioDelDia(preciosMap[row.fecha], row.tipo_combustible)
@@ -195,12 +204,41 @@ export default function CorporativoPage() {
     return Math.round((precioDelDia - row.precio_unit_centimos) * row.cantidad_galones)
   }
 
+  // Cada filtro solo ofrece las opciones compatibles con el otro, así nunca
+  // se puede armar una combinación (ej. empresa de licitación + tipo
+  // corporación) que jamás traería resultados.
+  const tiposDisponibles = useMemo(() => {
+    if (filtroEmpresas.length === 0) return [...TIPOS_ATENCION]
+    const empresasSeleccionadas = empresas.filter(e => filtroEmpresas.includes(e.id))
+    return TIPOS_ATENCION.filter(t => empresasSeleccionadas.some(e => e.tipo === t))
+  }, [empresas, filtroEmpresas])
+
+  const empresasDisponibles = useMemo(() => {
+    if (filtroTipos.length === 0) return empresas
+    return empresas.filter(e => filtroTipos.includes(e.tipo))
+  }, [empresas, filtroTipos])
+
+  // Si el otro filtro deja de admitir una opción ya marcada, se quita sola.
+  useEffect(() => {
+    setFiltroTipos(prev => {
+      const next = prev.filter(t => tiposDisponibles.includes(t as typeof TIPOS_ATENCION[number]))
+      return next.length === prev.length ? prev : next
+    })
+  }, [tiposDisponibles]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setFiltroEmpresas(prev => {
+      const next = prev.filter(id => empresasDisponibles.some(e => e.id === id))
+      return next.length === prev.length ? prev : next
+    })
+  }, [empresasDisponibles]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const rowsFiltradas = useMemo(() => rows.filter(r => {
-    if (filtroTipo !== 'todos' && r.tipo_atencion !== filtroTipo) return false
-    if (filtroEmpresa && r.empresa_id !== filtroEmpresa) return false
+    if (filtroTipos.length > 0 && !filtroTipos.includes(r.tipo_atencion)) return false
+    if (filtroEmpresas.length > 0 && !filtroEmpresas.includes(r.empresa_id ?? '')) return false
     if (filtroEstado !== 'todos' && r.estado_pago !== filtroEstado) return false
     return true
-  }), [rows, filtroTipo, filtroEmpresa, filtroEstado])
+  }), [rows, filtroTipos, filtroEmpresas, filtroEstado])
 
   const totales = useMemo(() => {
     let galones = 0, importe = 0, pendiente = 0, variacion = 0, hasVar = false
@@ -309,7 +347,7 @@ export default function CorporativoPage() {
     }
     setSaving(false)
     setShowModal(false)
-    loadMes()
+    loadDatos()
   }
 
   async function togglePago(row: RegistroRow) {
@@ -318,14 +356,14 @@ export default function CorporativoPage() {
     if (nuevo === 'pagado') upd.fecha_pago = hoyLocal()
     else upd.fecha_pago = null
     await supabase.from('registro_ventas').update(upd).eq('id', row.id)
-    loadMes()
+    loadDatos()
   }
 
   async function confirmDelete() {
     if (!deleteId) return
     await supabase.from('registro_ventas').delete().eq('id', deleteId)
     setDeleteId(null)
-    loadMes()
+    loadDatos()
   }
 
   const formImporte = useMemo(() => {
@@ -362,35 +400,55 @@ export default function CorporativoPage() {
 
           <div className="mx-1 h-4 w-px bg-app-border" />
 
-          <input
-            type="month" value={mes}
-            onChange={e => setMes(e.target.value)}
-            className="input text-xs" style={{ width: 128 }}
-          />
+          {/* Mes / Día */}
+          <div className="flex overflow-hidden rounded border border-app-border bg-white">
+            {([['mes', 'MES'], ['dia', 'DÍA']] as [ModoFecha, string][]).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => setModoFecha(m)}
+                className={`px-2 py-1 text-[11px] font-bold transition-colors ${
+                  modoFecha === m
+                    ? 'bg-primary text-primary-text'
+                    : 'bg-white text-app-muted hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {modoFecha === 'mes' ? (
+            <input
+              type="month" value={mes}
+              onChange={e => setMes(e.target.value)}
+              className="input text-xs" style={{ width: 128 }}
+            />
+          ) : (
+            <input
+              type="date" value={dia}
+              onChange={e => setDia(e.target.value)}
+              className="input text-xs" style={{ width: 140 }}
+            />
+          )}
 
           {tab === 'registros' && (
             <>
-              <select
-                value={filtroTipo}
-                onChange={e => setFiltroTipo(e.target.value as FiltroTipo)}
-                className="input text-xs" style={{ width: 130 }}
-              >
-                <option value="todos">Todos los tipos</option>
-                {TIPOS_ATENCION.map(t => (
-                  <option key={t} value={t}>{TIPO_LABELS[t]}</option>
-                ))}
-              </select>
+              <MultiSelectDropdown
+                options={tiposDisponibles.map(t => ({ value: t, label: TIPO_LABELS[t] }))}
+                selected={filtroTipos}
+                onChange={setFiltroTipos}
+                placeholder="Todos los tipos"
+                className="text-xs" style={{ width: 150 }}
+                showChevron={false}
+              />
 
-              <select
-                value={filtroEmpresa}
-                onChange={e => setFiltroEmpresa(e.target.value)}
-                className="input text-xs" style={{ width: 170 }}
-              >
-                <option value="">Todas las empresas</option>
-                {empresas.map(e => (
-                  <option key={e.id} value={e.id}>{e.nombre}</option>
-                ))}
-              </select>
+              <MultiSelectDropdown
+                options={empresasDisponibles.map(e => ({ value: e.id, label: e.nombre }))}
+                selected={filtroEmpresas}
+                onChange={setFiltroEmpresas}
+                placeholder="Todas las empresas"
+                className="text-xs" style={{ width: 190 }}
+              />
 
               <select
                 value={filtroEstado}

@@ -5,6 +5,7 @@ import TanquesSection from './TanquesSection'
 import EmpresasSection from './EmpresasSection'
 import ProveedoresSection from './ProveedoresSection'
 import AppConfigSection from './AppConfigSection'
+import OsinergminSection from './OsinergminSection'
 
 const TABS = [
   { key: 'turnos',       label: 'Turnos' },
@@ -12,6 +13,7 @@ const TABS = [
   { key: 'tanques',      label: 'Tanques' },
   { key: 'empresas',     label: 'Empresas' },
   { key: 'proveedores',  label: 'Proveedores' },
+  { key: 'osinergmin',   label: 'OSINERGMIN' },
   { key: 'sistema',      label: 'Sistema' },
 ] as const
 
@@ -46,6 +48,7 @@ export default function ConfiguracionPage() {
         {tab === 'tanques'      && <TanquesSection />}
         {tab === 'empresas'     && <EmpresasSection />}
         {tab === 'proveedores'  && <ProveedoresSection />}
+        {tab === 'osinergmin'   && <OsinergminSection />}
         {tab === 'sistema'      && <AppConfigSection />}
       </div>
     </div>

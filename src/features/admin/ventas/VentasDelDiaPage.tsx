@@ -24,7 +24,7 @@ interface CierreRow {
   entregado_grifero_centimos: number | null
   contabilizado_admin_centimos: number | null
   colaborador_id: string
-  vales_total_centimos: number  // suma de cierre_vales
+  dscto_vales_centimos: number
 }
 
 interface RegistroRow {
@@ -64,6 +64,7 @@ interface ShiftInputs {
   yape: string
   openpay: string
   deposito: string
+  dscto_vales: string
   serafinado: string
   redondeo: string
   entregado_grifero: string
@@ -81,7 +82,7 @@ interface CierreRowCalculated {
   yape_centimos: number
   openpay_centimos: number
   deposito_transferencia_centimos: number
-  vales_total_centimos: number
+  dscto_vales_centimos: number
   corporacion_centimos: number
   licitaciones_centimos: number
   particulares_centimos: number
@@ -138,7 +139,7 @@ function calcEfectivoFinal(
     c.yape_centimos -
     c.openpay_centimos -
     c.deposito_transferencia_centimos -
-    c.vales_total_centimos -
+    c.dscto_vales_centimos -
     totalCreditos -
     c.serafinado_centimos +
     c.redondeo_centimos
@@ -229,7 +230,7 @@ export default function VentasPage() {
             'deposito_transferencia_centimos, corporacion_centimos, licitaciones_centimos, ' +
             'particulares_centimos, chevron_centimos, serafinado_centimos, redondeo_centimos, ' +
             'contaminacion_centimos, entregado_grifero_centimos, contabilizado_admin_centimos, ' +
-            'colaborador_id, cierre_vales(monto_centimos)'
+            'colaborador_id, dscto_vales_centimos'
           )
           .eq('fecha', fecha),
         supabase.from('precios_diarios').select('*').eq('fecha', fecha).maybeSingle(),
@@ -264,12 +265,7 @@ export default function VentasPage() {
       const map: Record<number, CierreRow> = {}
       const dbCierres: any[] = (!cierresRes.error && Array.isArray(cierresRes.data)) ? cierresRes.data : []
       for (const raw of dbCierres) {
-        const vales = (raw.cierre_vales as { monto_centimos: number }[]) ?? []
-        const { cierre_vales: _cv, ...rest } = raw as any
-        map[raw.turno_id] = {
-          ...rest,
-          vales_total_centimos: vales.reduce((s, v) => s + v.monto_centimos, 0),
-        }
+        map[raw.turno_id] = raw
       }
       setCierresMap(map)
 
@@ -365,6 +361,7 @@ export default function VentasPage() {
         yape: c?.yape_centimos ? (c.yape_centimos / 100).toFixed(2) : '',
         openpay: c?.openpay_centimos ? (c.openpay_centimos / 100).toFixed(2) : '',
         deposito: c?.deposito_transferencia_centimos ? (c.deposito_transferencia_centimos / 100).toFixed(2) : '',
+        dscto_vales: c?.dscto_vales_centimos ? (c.dscto_vales_centimos / 100).toFixed(2) : '',
         serafinado: c?.serafinado_centimos ? (c.serafinado_centimos / 100).toFixed(2) : '',
         redondeo: c?.redondeo_centimos ? (c.redondeo_centimos / 100).toFixed(2) : '',
         entregado_grifero: c?.entregado_grifero_centimos != null ? (c.entregado_grifero_centimos / 100).toFixed(2) : '',
@@ -405,8 +402,8 @@ export default function VentasPage() {
           entregado_grifero_centimos,
           contabilizado_admin_centimos,
           colaborador_id,
-          profiles:colaborador_id ( nombre ),
-          cierre_vales ( monto_centimos )
+          dscto_vales_centimos,
+          profiles:colaborador_id ( nombre )
         `)
         .gte('fecha', startDate)
         .lte('fecha', endDate)
@@ -417,7 +414,7 @@ export default function VentasPage() {
 
       const calculated: CierreRowCalculated[] = (data as any[] || []).map((raw) => {
         const totalConsola = raw.total_consola_centimos ?? 0
-        const valesTotal = raw.cierre_vales?.reduce((sum: number, v: any) => sum + v.monto_centimos, 0) ?? 0
+        const dsctoVales = raw.dscto_vales_centimos ?? 0
         const creditos =
           raw.corporacion_centimos +
           raw.licitaciones_centimos +
@@ -429,7 +426,7 @@ export default function VentasPage() {
           raw.yape_centimos -
           raw.openpay_centimos -
           raw.deposito_transferencia_centimos -
-          valesTotal -
+          dsctoVales -
           creditos -
           raw.serafinado_centimos +
           raw.redondeo_centimos
@@ -452,7 +449,7 @@ export default function VentasPage() {
           yape_centimos: raw.yape_centimos,
           openpay_centimos: raw.openpay_centimos,
           deposito_transferencia_centimos: raw.deposito_transferencia_centimos,
-          vales_total_centimos: valesTotal,
+          dscto_vales_centimos: dsctoVales,
           corporacion_centimos: raw.corporacion_centimos,
           licitaciones_centimos: raw.licitaciones_centimos,
           particulares_centimos: raw.particulares_centimos,
@@ -532,11 +529,12 @@ export default function VentasPage() {
     const yape = toCentimos(inputs.yape)
     const openpay = toCentimos(inputs.openpay)
     const deposito = toCentimos(inputs.deposito)
+    const dsctoVales = toCentimos(inputs.dscto_vales)
     const serafinado = toCentimos(inputs.serafinado)
     const redondeo = toCentimos(inputs.redondeo)
     const entregado = inputs.entregado_grifero === '' ? null : toCentimos(inputs.entregado_grifero)
     const contabilizado = inputs.contabilizado_admin === '' ? null : toCentimos(inputs.contabilizado_admin)
-    
+
     // Evitar crear cierres "fantasma": si aún no existe un cierre para este
     // turno y no hay ningún dato significativo (todo vacío/en cero y sin
     // colaborador elegido), no insertar nada. Antes, cualquier blur creaba
@@ -544,7 +542,7 @@ export default function VentasPage() {
     const existingCierre = cierresMap[turnoId]
     const tieneDatos =
       totalConsola !== null ||
-      yape > 0 || openpay > 0 || deposito > 0 ||
+      yape > 0 || openpay > 0 || deposito > 0 || dsctoVales > 0 ||
       serafinado > 0 || redondeo > 0 ||
       entregado !== null || contabilizado !== null ||
       inputs.colaborador_id !== ''
@@ -569,6 +567,7 @@ export default function VentasPage() {
       yape_centimos: yape,
       openpay_centimos: openpay,
       deposito_transferencia_centimos: deposito,
+      dscto_vales_centimos: dsctoVales,
       serafinado_centimos: serafinado,
       redondeo_centimos: redondeo,
       entregado_grifero_centimos: entregado,
@@ -791,7 +790,7 @@ export default function VentasPage() {
       yape: sum('yape_centimos'),
       openpay: sum('openpay_centimos'),
       deposito: sum('deposito_transferencia_centimos'),
-      vales: sum('vales_total_centimos'),
+      vales: sum('dscto_vales_centimos'),
       corporacion: sum('corporacion_centimos'),
       licitaciones: sum('licitaciones_centimos'),
       particulares: sum('particulares_centimos'),
@@ -1019,7 +1018,7 @@ export default function VentasPage() {
                           entregado_grifero_centimos: null,
                           contabilizado_admin_centimos: null,
                           colaborador_id: '',
-                          vales_total_centimos: 0
+                          dscto_vales_centimos: 0
                         }
 
                         const creditos = creditosPorTurno[t.id] || { corporacion: 0, licitaciones: 0, particulares: 0, chevron: 0 }
@@ -1031,6 +1030,7 @@ export default function VentasPage() {
                           yape: '',
                           openpay: '',
                           deposito: '',
+                          dscto_vales: '',
                           serafinado: '',
                           redondeo: '',
                           entregado_grifero: '',
@@ -1093,9 +1093,17 @@ export default function VentasPage() {
                                 placeholder="0.00"
                               />
                             </td>
-                            {/* Vales (Solo Lectura, sumado de cierre_vales) */}
-                            <td className="text-right font-mono text-xs text-slate-600 bg-slate-50/50">
-                              {fs(c.vales_total_centimos)}
+                            {/* Dscto. Vales (editable) */}
+                            <td>
+                              <input
+                                type="number"
+                                step="0.01"
+                                className={inputStyle}
+                                value={inputs.dscto_vales}
+                                onChange={e => handleInputChange(t.id, 'dscto_vales', e.target.value)}
+                                onBlur={() => handleShiftInputBlur(t.id, 'dscto_vales')}
+                                placeholder="0.00"
+                              />
                             </td>
 
                             {/* Créditos (Calculados Reactivos) */}
@@ -1170,11 +1178,12 @@ export default function VentasPage() {
                                       const yape = toCentimos(updated[t.id].yape)
                                       const openpay = toCentimos(updated[t.id].openpay)
                                       const deposito = toCentimos(updated[t.id].deposito)
+                                      const dsctoVales = toCentimos(updated[t.id].dscto_vales)
                                       const serafinado = toCentimos(updated[t.id].serafinado)
                                       const redondeo = toCentimos(updated[t.id].redondeo)
                                       const entregado = updated[t.id].entregado_grifero === '' ? null : toCentimos(updated[t.id].entregado_grifero)
                                       const contabilizado = updated[t.id].contabilizado_admin === '' ? null : toCentimos(updated[t.id].contabilizado_admin)
-                                      
+
                                       const payload = {
                                         fecha,
                                         turno_id: t.id,
@@ -1183,6 +1192,7 @@ export default function VentasPage() {
                                         yape_centimos: yape,
                                         openpay_centimos: openpay,
                                         deposito_transferencia_centimos: deposito,
+                                        dscto_vales_centimos: dsctoVales,
                                         serafinado_centimos: serafinado,
                                         redondeo_centimos: redondeo,
                                         entregado_grifero_centimos: entregado,
@@ -1718,7 +1728,7 @@ export default function VentasPage() {
                       const diaYape = sumCentimos(turnosDelDia.map(c => c.yape_centimos))
                       const diaOpenpay = sumCentimos(turnosDelDia.map(c => c.openpay_centimos))
                       const diaDeposito = sumCentimos(turnosDelDia.map(c => c.deposito_transferencia_centimos))
-                      const diaVales = sumCentimos(turnosDelDia.map(c => c.vales_total_centimos))
+                      const diaVales = sumCentimos(turnosDelDia.map(c => c.dscto_vales_centimos))
                       const diaCorporacion = sumCentimos(turnosDelDia.map(c => c.corporacion_centimos))
                       const diaLicitaciones = sumCentimos(turnosDelDia.map(c => c.licitaciones_centimos))
                       const diaParticulares = sumCentimos(turnosDelDia.map(c => c.particulares_centimos))
@@ -1790,7 +1800,7 @@ export default function VentasPage() {
                                 <td className="text-right font-mono text-xs">{fs(c.yape_centimos)}</td>
                                 <td className="text-right font-mono text-xs">{fs(c.openpay_centimos)}</td>
                                 <td className="text-right font-mono text-xs">{fs(c.deposito_transferencia_centimos)}</td>
-                                <td className="text-right font-mono text-xs">{fs(c.vales_total_centimos)}</td>
+                                <td className="text-right font-mono text-xs">{fs(c.dscto_vales_centimos)}</td>
                                 
                                 {modo === 'abreviado' ? (
                                   <td className="text-right font-mono text-xs font-medium" style={{ background: '#fef9c3' }}>

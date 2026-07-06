@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Tanque, TipoCombustible } from '@/types'
 import { SectionHeader, AcBadge, RowActions, Field, ModalActions, Loading, ModalBox } from './_helpers'
+import TanqueLayoutEditor from './TanqueLayoutEditor'
+import TanqueAforoModal from './TanqueAforoModal'
 
 type Form = { nombre: string; tipo_combustible_codigo: string; capacidad_galones: string }
 const INIT: Form = { nombre: '', tipo_combustible_codigo: '', capacidad_galones: '' }
@@ -14,6 +16,7 @@ export default function TanquesSection() {
   const [editId, setEditId] = useState<number | null>(null)
   const [form, setForm] = useState<Form>(INIT)
   const [saving, setSaving] = useState(false)
+  const [aforoTanque, setAforoTanque] = useState<Tanque | null>(null)
 
   async function load() {
     const [{ data: t }, { data: tc }] = await Promise.all([
@@ -65,6 +68,9 @@ export default function TanquesSection() {
 
   return (
     <div className="max-w-2xl">
+      {!loading && rows.length > 0 && (
+        <TanqueLayoutEditor tanques={rows} onChanged={load} />
+      )}
       <SectionHeader title="Tanques" onAdd={openNew} />
       {loading ? <Loading /> : (
         <table className="table-excel">
@@ -74,7 +80,7 @@ export default function TanquesSection() {
               <th>Combustible</th>
               <th className="text-right" style={{ width: 100 }}>Cap. (gal)</th>
               <th style={{ width: 60 }}>Activo</th>
-              <th style={{ width: 140 }} />
+              <th style={{ width: 190 }} />
             </tr>
           </thead>
           <tbody>
@@ -89,11 +95,16 @@ export default function TanquesSection() {
                 </td>
                 <td><AcBadge v={t.activo} /></td>
                 <td>
-                  <RowActions
-                    onEdit={() => openEdit(t)}
-                    onToggle={() => toggle(t)}
-                    activo={t.activo}
-                  />
+                  <div className="flex gap-1">
+                    <RowActions
+                      onEdit={() => openEdit(t)}
+                      onToggle={() => toggle(t)}
+                      activo={t.activo}
+                    />
+                    <button className="btn-ghost text-xs" onClick={() => setAforoTanque(t)}>
+                      Aforo
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -147,6 +158,10 @@ export default function TanquesSection() {
             disabled={!form.nombre.trim() || !form.tipo_combustible_codigo}
           />
         </ModalBox>
+      )}
+
+      {aforoTanque && (
+        <TanqueAforoModal tanque={aforoTanque} onClose={() => setAforoTanque(null)} />
       )}
     </div>
   )

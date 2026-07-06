@@ -20,7 +20,7 @@ const emptyVales = (): ValesByTipo => ({
   credito: [],
 })
 
-export default function CierreCajaPage() {
+export default function CierreCajaPage({ base = '' }: { base?: string }) {
   const navigate = useNavigate()
   const { session, profile } = useAuth()
   const { data: turnos = [] } = useTurnos()
@@ -82,6 +82,7 @@ export default function CierreCajaPage() {
           efectivo_centimos: efectivoCentimos,
           yape_centimos: yapeCentimos,
           openpay_centimos: openpayCentimos,
+          dscto_vales_centimos: valesGrandTotal,
           total_consola_centimos: hayConsola ? consolaCentimos : null,
           diferencia_centimos: hayConsola ? difCentimos : null,
           estado: 'enviado',
@@ -158,7 +159,7 @@ export default function CierreCajaPage() {
       {/* Top bar */}
       <div className="sticky top-0 z-20 flex h-12 items-center gap-3 border-b border-app-border bg-white px-4 shadow-sm">
         <button
-          onClick={() => navigate('/')}
+          onClick={() => navigate(base || '/')}
           className="flex h-8 w-8 items-center justify-center rounded-lg bg-app-bg text-lg text-app-muted transition-colors duration-200 hover:bg-app-border"
         >
           ←
