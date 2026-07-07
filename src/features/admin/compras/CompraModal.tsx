@@ -86,7 +86,8 @@ export default function CompraModal({
   )
 
   // Productos efectivamente en la compra (con galones > 0).
-  const productosEnCompra = PRODUCTOS.filter((p) => numf(lineas[p.code]?.galones) > 0).map((p) => p.code)
+  // Tipado como string[] para poder cruzarlo con aplica_a (viene como string[]).
+  const productosEnCompra: string[] = PRODUCTOS.filter((p) => numf(lineas[p.code]?.galones) > 0).map((p) => p.code)
 
   // El flete se cotiza POR GALÓN. Galones a los que aplica (los seleccionados;
   // ninguno = todos) y su total = tarifa/gl × esos galones.

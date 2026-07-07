@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-05** (parte 2: Varillaje + OSINERGMIN completos)
+Última actualización: **2026-07-06** (auditoría + soft delete + rango de fechas en Seguimiento, gráfico OSINERGMIN, desempate de ranking)
 
 ## Módulos completados
 
@@ -125,6 +125,36 @@ metadata:
 - **UI** (`src/features/admin/compras/`): `ComprasPage.tsx` ya enruta la pestaña **Registro** a `RegistroComprasPage.tsx` (antes placeholder). Tabla estilo hoja "COMPRAS" (galones y precio/gl por producto Diesel/Premium/Regular, monto pagado = Σ galones×precio, flete, estado, **utilidad/gl** = precio de venta actual de `precios_diarios` − precio de compra, en verde/rojo) + fila de TOTALES. `CompraModal.tsx` (overlay propio más ancho que `.modal-box`) para alta/edición: fecha, proveedor, 3 líneas de producto, hasta 3 fletes con checkboxes de "aplica a".
 - Dinero: precio/gl en soles 4 dec (efímero-preciso como el cotizador); montos de flete en céntimos (`toCentimos`). `npx tsc --noEmit` OK.
 
+## Cambios de esta sesión (2026-07-06)
+
+### OSINERGMIN — desempate de ranking + gráfico de evolución
+1. **Desempate del ranking por fecha de registro** (`osinergmin-cron`): a IGUAL precio, va primero el grifo que registró su precio antes (columna `FECHA_*` del Excel; candidatas `FECHA_HORA/FECHA_PRECIO/FECHA_REGISTRO/FECHA_ACTUALIZACION/FECHA`, acepta serial de Excel o texto dd/mm/yyyy). El puesto ahora es la **posición real en la lista desempatada** (`ourIdx + 1`, antes `count(precio menor)+1` que daba puestos compartidos en empate, inconsistente con el Top 10). Sin columna de fecha → se respeta el orden del Excel (sort estable). **⚠️ Requiere redeploy**: `npx supabase functions deploy osinergmin-cron --project-ref acvavpzdeichdvsgblcn --no-verify-jwt`.
+2. **Gráfico "Evolución de tu ranking"** (`OsinergminPage`): SVG a mano (sin dependencias), tipos **LÍNEAS/BARRAS** conmutables, filtro por producto (chips-leyenda, mínimo 1 activo; el color SIGUE al producto: DB5 azul `#2a78d6`, Regular aqua `#1baf7a`, Premium ámbar `#eda100` — paleta validada con el validador de dataviz sobre blanco), **eje Y invertido** (#1 arriba = mejor), tooltip por snapshot (puesto, total estab., precio), crosshair, etiquetas al final de línea con anti-colisión, ResizeObserver para ancho. Preferencias persistidas (`osinergmin.grafico.*`). La tabla de detalle se mantiene debajo como respaldo accesible.
+   - **Rango de fechas propio del gráfico** (añadido 2026-07-06): el `RankingChart` ya NO recibe `snapshots` por prop; **carga su propia serie** por rango `fecha_consulta` (DESDE/HASTA, se escribe o se elige en calendario con botón 📅 encadenado + presets 7d/30d/90d/1a; default últimos 30 días). Se desacopla del límite de 30 de la página. La página le pasa `refreshKey={actual?.id}` para que re-consulte cuando Realtime trae un snapshot nuevo.
+   - **Comparativo "Nº empresas"** (toggle): añade una línea gris punteada con el `total_establecimientos` del distrito. Como el ranking y el total de empresas son la MISMA unidad (posiciones), se dibuja en el MISMO eje (NO es doble eje — regla dataviz): al activarlo, `yMax` sube hasta el total de empresas y las líneas de producto se ven "en contexto" (#5 de 12 ≠ #5 de 60). El total también sale en el tooltip.
+
+### Seguimiento (CorporativoPage) — rework mayor
+3. **Filtro de rango DESDE/HASTA** reemplaza el switch MES/DÍA: dos `input type="date"` (se puede escribir o abrir calendario), botón 📅 que abre el calendario de "desde" y encadena el de "hasta" (`showPicker()`), botón "Mes actual". Default: mes en curso completo. Si el rango se cruza, se auto-corrige. Persistido (`seguimiento.desde/hasta`).
+4. **Columna VARIACIÓN eliminada** (y su cálculo + query a `precios_diarios`): el descuadre por redondeo se ve en la columna REDONDEO de Ventas. La tabla quedó en 15 columnas con `table-fixed` + anchos explícitos (minWidth 1420).
+5. **Edición EN LÍNEA (sin modal)**: "Editar" resalta la fila (`!bg-blue-50`) y **opaca el resto** (`opacity-30 pointer-events-none`); los inputs quedan en las mismas celdas + una fila secundaria (DNI, empresa/fecha facturación, fecha pago) con Guardar/Cancelar. El modal quedó SOLO para "+ Nuevo registro". Recargar/cambiar filtros cancela la edición.
+6. **Historial de auditoría por registro**: clic en cualquier fila (fuera de controles) abre el modal "Historial de cambios" — lee `registro_ventas_log` por el **uuid** del registro; muestra acción (Creado/Modificado/Papelera/Restaurado), fecha/hora, autor (join manual a `profiles`) y el **diff campo a campo** (antes → después, con formato de moneda/catálogos).
+7. **Soft delete + Papelera**: eliminar = marcar `deleted_at/deleted_by` (nada se borra físicamente). Toggle **🗑 Papelera** en la barra: muestra solo eliminados con botón "↩ Restaurar". Las consultas normales filtran `.is('deleted_at', null)`.
+8. **Fix conexión Ventas↔Seguimiento**: el insert de "Nuevo registro" NO enviaba `colaborador_id` (NOT NULL) → fallaba **silenciosamente** (tampoco se leía `error`). Ahora envía `profile.id` y todas las operaciones (guardar/toggle pago/eliminar/restaurar) alertan si Supabase devuelve error. Ambos módulos siguen sobre la MISMA tabla `registro_ventas`; los registros rápidos de Ventas aparecen en Seguimiento y viceversa.
+
+### Ventas (VentasDelDiaPage)
+9. **Ancho de tablas FIJO (no dinámico)**: la Tabla de Turnos y la tabla de Registros (modo Completo) pasaron a `table-fixed` con `minWidth` = suma exacta de columnas (1390/1094 y 1200) — el contenido largo (nombres de cliente en selects, montos) ya NO ensancha la tabla; si no entra, scroll horizontal del contenedor.
+10. **Soft delete también aquí**: "Eliminar" marca `deleted_at/deleted_by` (recuperable desde Seguimiento→Papelera); `loadDia` y el chequeo de "Corregir fecha" filtran eliminados.
+
+### Base de datos — migración 013 (⚠️ PENDIENTE DE APLICAR en Supabase)
+- `013_registro_ventas_auditoria_softdelete.sql`:
+  - `registro_ventas.deleted_at/deleted_by` + índice parcial.
+  - Tabla `registro_ventas_log` (jsonb old/new, `usuario_id = auth.uid()`, sin FK para sobrevivir a borrados físicos) + trigger `trg_audit_registro_ventas` (SECURITY DEFINER) que registra INSERT/UPDATE/SOFT_DELETE/RESTORE/DELETE y omite updates sin cambios.
+  - RLS: log SELECT solo admin+; en `registro_ventas` se reemplazó la política `FOR ALL` por políticas por operación — **DELETE físico solo superadmin** (la app ya no lo usa).
+  - **La UI de Seguimiento/Ventas consulta `deleted_at` y el log → aplicar la migración ANTES de desplegar este build.**
+
+### Otros
+- **Fix build pre-existente**: `npm i -D @types/node` + `vite.config.ts` migrado de `path/__dirname` a `fileURLToPath(new URL(...))`; `CompraModal.tsx` tipa `productosEnCompra: string[]` (error TS2345). `npm run build` (tsc -b + vite) ahora pasa en verde.
+
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.
 - **Fix refresh al minimizar** — `onAuthStateChange` ignora `TOKEN_REFRESHED` y `SIGNED_IN` si ya hay perfil cargado (usa `profileRef`).
@@ -154,7 +184,7 @@ metadata:
 
 ## Gotchas conocidos (para futuras sesiones)
 - **Supabase 502 / CORS al cargar**: es infra, NO código. Probable proyecto pausado (plan free se pausa por inactividad) → reactivar en el dashboard de Supabase. El código ya no queda atascado si ocurre.
-- **`npm run build` (= `tsc -b && vite build`) falla en `vite.config.ts`**: faltan `@types/node` (`Cannot find module 'path'`, `__dirname`). Pre-existente, NO afecta `vite dev` ni `vite build` directo (que sí compila OK). Fix pendiente: `npm i -D @types/node`.
+- ~~`npm run build` falla en `vite.config.ts` (faltaba `@types/node`)~~ ✅ corregido 2026-07-06 (`@types/node` instalado + `fileURLToPath`); `npm run build` en verde.
 - **Lint**: el repo arrastra muchos `no-explicit-any` pre-existentes; `npm run lint` no está en verde. El build no usa eslint.
 
 ## Estructura de archivos clave
@@ -221,6 +251,7 @@ supabase/
     010_varillaje_stock_cotizador.sql ← fn_stock_actual() (Varillaje→Cotizador)
     011_registro_compras.sql        ← compras + compra_lineas + compra_fletes + fn_guardar_compra()
     012_flete_por_galon.sql         ← flete por galón (compra_fletes.precio_gl) + RPC actualizada
+    013_registro_ventas_auditoria_softdelete.sql ← ⚠️ POR APLICAR: log auditoría + soft delete registro_ventas
 ```
 
 **Why:** Registrar el estado exacto para que futuras sesiones puedan continuar sin re-derivar qué se hizo.

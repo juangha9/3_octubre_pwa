@@ -7,6 +7,10 @@
 // snapshot + top10. Pensada para el cron horario (pg_cron), pero también la
 // puede disparar el superadmin para probar.
 //
+// Ranking: precio ascendente; si dos grifos EMPATAN en precio, va primero el
+// que registró su precio antes (columna FECHA_* del Excel). El puesto es la
+// posición real en esa lista desempatada.
+//
 // Se salta la escritura si el ranking/precio no cambió respecto al último
 // snapshot (evita ensuciar el historial con 24 filas idénticas al día).
 //
@@ -119,15 +123,32 @@ async function run(): Promise<{ status: number; body: unknown }> {
   })
   if (!resp.ok) return { status: 502, body: { error: `No se pudo descargar el Excel (HTTP ${resp.status})` } }
 
-  const NEEDED = ['RUC', 'RAZON', 'DISTRITO', 'DIRECCION', 'PRODUCTO', 'PRECIO_VENTA']
+  // FECHA_*: fecha en que el grifo registró su precio. Se usa SOLO para
+  // desempatar el ranking (a igual precio, gana el que lo publicó primero).
+  // El nombre de la columna varía según la descarga, por eso hay candidatas.
+  const FECHA_CANDIDATAS = ['FECHA_HORA', 'FECHA_PRECIO', 'FECHA_REGISTRO', 'FECHA_ACTUALIZACION', 'FECHA']
+  const NEEDED = ['RUC', 'RAZON', 'DISTRITO', 'DIRECCION', 'PRODUCTO', 'PRECIO_VENTA', ...FECHA_CANDIDATAS]
   const { rows, letraDe, decode } = parseXlsx(new Uint8Array(await resp.arrayBuffer()), NEEDED)
   const cRUC = letraDe['RUC'], cRAZON = letraDe['RAZON'], cDIST = letraDe['DISTRITO']
   const cDIR = letraDe['DIRECCION'], cPROD = letraDe['PRODUCTO'], cPRECIO = letraDe['PRECIO_VENTA']
+  const cFECHA = FECHA_CANDIDATAS.map((n) => letraDe[n]).find(Boolean)
   if (!cRUC || !cDIST || !cPROD || !cPRECIO) {
     return { status: 422, body: { error: 'El Excel no tiene las columnas esperadas.' } }
   }
 
   const norm = (v: string | undefined) => decode(v ?? '').trim()
+  // Clave ordenable de la fecha de registro: acepta el serial numérico de Excel
+  // o texto "dd/mm/yyyy [hh:mm[:ss]]". Sin fecha → Infinity (pierde el empate).
+  const fechaClave = (raw: string | undefined): number => {
+    const s = norm(raw)
+    if (!s) return Infinity
+    const n = Number(s)
+    if (!isNaN(n) && n > 0) return n
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/.exec(s)
+    if (m) return Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] ?? '0'), +(m[5] ?? '0'), +(m[6] ?? '0'))
+    const t = Date.parse(s)
+    return isNaN(t) ? Infinity : t
+  }
   // Distrito de nuestro grifo (rows = solo filas de datos, sin cabecera)
   let distrito = ''
   for (let i = 0; i < rows.length; i++) {
@@ -135,7 +156,7 @@ async function run(): Promise<{ status: number; body: unknown }> {
   }
   if (!distrito) return { status: 404, body: { error: `No se encontró el RUC ${ruc} en el Excel.` } }
 
-  type Reg = { ruc: string; producto: string; precio: number }
+  type Reg = { ruc: string; producto: string; precio: number; fecha: number }
   const enDistrito: Reg[] = []
   const rucsDistrito = new Set<string>()
   const infoPorRuc = new Map<string, { razon: string; direccion: string }>()
@@ -146,7 +167,12 @@ async function run(): Promise<{ status: number; body: unknown }> {
     if (!infoPorRuc.has(rr)) {
       infoPorRuc.set(rr, { razon: norm(rows[i][cRAZON]), direccion: cDIR ? norm(rows[i][cDIR]) : '' })
     }
-    enDistrito.push({ ruc: rr, producto: norm(rows[i][cPROD]).toUpperCase(), precio: Number(rows[i][cPRECIO]) || 0 })
+    enDistrito.push({
+      ruc: rr,
+      producto: norm(rows[i][cPROD]).toUpperCase(),
+      precio: Number(rows[i][cPRECIO]) || 0,
+      fecha: cFECHA ? fechaClave(rows[i][cFECHA]) : Infinity,
+    })
   }
 
   const snapshot: Record<string, number | null> = {
@@ -161,20 +187,33 @@ async function run(): Promise<{ status: number; body: unknown }> {
 
   for (const p of productos) {
     const items = enDistrito.filter((r) => r.producto === p.nombreExcel && r.precio > 0)
-    const byRuc = new Map<string, number>()
-    for (const it of items) if (!byRuc.has(it.ruc) || it.precio < byRuc.get(it.ruc)!) byRuc.set(it.ruc, it.precio)
-    const lista = [...byRuc.entries()].map(([r, precio]) => ({ ruc: r, precio })).sort((a, b) => a.precio - b.precio)
+    // Precio mínimo por RUC; a igual precio se conserva la fecha más antigua
+    // (la que le da la preferencia en el desempate).
+    const byRuc = new Map<string, { precio: number; fecha: number }>()
+    for (const it of items) {
+      const prev = byRuc.get(it.ruc)
+      if (!prev || it.precio < prev.precio || (it.precio === prev.precio && it.fecha < prev.fecha)) {
+        byRuc.set(it.ruc, { precio: it.precio, fecha: it.fecha })
+      }
+    }
+    // Orden del ranking: precio ascendente; EMPATE → primero el que registró
+    // su precio antes (fecha más antigua). Sin fecha, se respeta el orden del
+    // Excel (sort estable).
+    const lista = [...byRuc.entries()]
+      .map(([r, v]) => ({ ruc: r, precio: v.precio, fecha: v.fecha }))
+      .sort((a, b) => a.precio - b.precio || (a.fecha === b.fecha ? 0 : a.fecha - b.fecha))
     if (lista.length === 0) continue
-    const nuestro = lista.find((x) => x.ruc === ruc)
-    if (nuestro) {
-      const rk = lista.filter((x) => x.precio < nuestro.precio).length + 1
+    // Ranking = posición real en la lista desempatada (consistente con el Top 10).
+    const ourIdx = lista.findIndex((x) => x.ruc === ruc)
+    if (ourIdx >= 0) {
+      const nuestro = lista[ourIdx]
+      const rk = ourIdx + 1
       if (p.codigo === 'DB5') { snapshot.ranking_db5 = rk; snapshot.precio_db5_centimos = toCentimos(nuestro.precio) }
       if (p.codigo === 'REGULAR') { snapshot.ranking_regular = rk; snapshot.precio_regular_centimos = toCentimos(nuestro.precio) }
       if (p.codigo === 'PREMIUM') { snapshot.ranking_premium = rk; snapshot.precio_premium_centimos = toCentimos(nuestro.precio) }
     }
     // Top 10; si nuestro grifo queda fuera del 10, la lista crece hasta incluir
     // nuestra posición (para que siempre aparezcamos).
-    const ourIdx = lista.findIndex((x) => x.ruc === ruc)
     const hasta = ourIdx >= 10 ? ourIdx + 1 : 10
     lista.slice(0, hasta).forEach((x, i) => {
       const info = infoPorRuc.get(x.ruc)

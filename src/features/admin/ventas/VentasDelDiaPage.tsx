@@ -242,6 +242,7 @@ export default function VentasPage() {
             'importe_centimos, empresas_clientes(nombre)'
           )
           .eq('fecha', fecha)
+          .is('deleted_at', null)
           .order('created_at'),
       ])
 
@@ -305,7 +306,7 @@ export default function VentasPage() {
     setFixingDate(true)
     try {
       const [regCheck, cierreCheck, precioCheck] = await Promise.all([
-        supabase.from('registro_ventas').select('id').eq('fecha', fixDateTarget).limit(1),
+        supabase.from('registro_ventas').select('id').eq('fecha', fixDateTarget).is('deleted_at', null).limit(1),
         supabase.from('cierres_caja').select('id').eq('fecha', fixDateTarget).limit(1),
         supabase.from('precios_diarios').select('id').eq('fecha', fixDateTarget).limit(1),
       ])
@@ -728,10 +729,16 @@ export default function VentasPage() {
     }
   }
 
-  // ── Borrar registro de venta ──────────────────────────────────
+  // ── Borrar registro de venta (soft delete) ────────────────────
+  // Nunca se borra físicamente: se marca deleted_at y queda recuperable
+  // desde Seguimiento → Papelera. El trigger de auditoría lo registra.
   async function deleteRegistro(id: string) {
     if (!confirm('¿Seguro que desea eliminar este registro?')) return
-    await supabase.from('registro_ventas').delete().eq('id', id)
+    const { error } = await supabase
+      .from('registro_ventas')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: profile?.id ?? null })
+      .eq('id', id)
+    if (error) alert('Error al eliminar el registro: ' + error.message)
     loadDia(true) // Refresco silencioso
   }
 
@@ -973,8 +980,10 @@ export default function VentasPage() {
             ) : (
               <>
                 {/* Tabla de Turnos (Totalmente Editable) */}
+                {/* table-fixed: ancho de columnas FIJO (no se ensancha con el contenido);
+                    si no entra en pantalla, aparece scroll horizontal del contenedor. */}
                 <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
-                  <table className="table-excel">
+                  <table className="table-excel table-fixed" style={{ minWidth: modo === 'completo' ? 1390 : 1094 }}>
                     <thead>
                       <tr>
                         <th style={{ width: 56 }}>TURNO</th>
@@ -1319,8 +1328,10 @@ export default function VentasPage() {
                         {registrosRapidos.length} registro{registrosRapidos.length > 1 ? 's' : ''} rápido{registrosRapidos.length > 1 ? 's' : ''} pendiente{registrosRapidos.length > 1 ? 's' : ''} de completar con el detalle del vale/factura (resaltado{registrosRapidos.length > 1 ? 's' : ''} abajo)
                       </div>
                     )}
+                    {/* table-fixed: la tabla de inserción mantiene ancho constante aunque
+                        el contenido (nombres de cliente, montos) sea largo. */}
                     <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
-                    <table className="table-excel">
+                    <table className="table-excel table-fixed" style={{ minWidth: 1200 }}>
                       <thead>
                         <tr>
                           <th style={{ width: 86 }}>FECHA</th>

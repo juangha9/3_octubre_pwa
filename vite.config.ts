@@ -1,11 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import path from 'path'
+// URL en lugar de path/__dirname: no requiere @types/node para el type-check
+import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   plugins: [
     react(),
