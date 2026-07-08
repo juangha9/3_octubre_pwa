@@ -1336,9 +1336,9 @@ export default function VentasPage() {
                         <tr>
                           <th style={{ width: 86 }}>FECHA</th>
                           <th style={{ width: 150 }}>CLIENTE</th>
-                          <th style={{ width: 80 }}>VALE</th>
-                          <th style={{ width: 80 }}>PLACA</th>
-                          <th style={{ width: 70 }}>TICKET</th>
+                          <th style={{ width: 88 }}>VALE LIC.</th>
+                          <th style={{ width: 72 }}>TICKET</th>
+                          <th style={{ width: 78 }}>PLACA</th>
                           <th style={{ width: 120 }}>CONDUCTOR</th>
                           <th style={{ width: 84 }}>DNI</th>
                           <th style={{ width: 58 }}>TURNO</th>
@@ -1385,18 +1385,18 @@ export default function VentasPage() {
                           <td>
                             <input
                               className="input py-0 h-6 text-xs w-full"
-                              placeholder="Placa"
-                              value={nuevo.placa}
-                              onChange={e => setNuevo({ ...nuevo, placa: e.target.value })}
-                              style={{ textTransform: 'uppercase' }}
+                              placeholder="Serie"
+                              value={nuevo.serie}
+                              onChange={e => setNuevo({ ...nuevo, serie: e.target.value })}
                             />
                           </td>
                           <td>
                             <input
                               className="input py-0 h-6 text-xs w-full"
-                              placeholder="Serie"
-                              value={nuevo.serie}
-                              onChange={e => setNuevo({ ...nuevo, serie: e.target.value })}
+                              placeholder="Placa"
+                              value={nuevo.placa}
+                              onChange={e => setNuevo({ ...nuevo, placa: e.target.value })}
+                              style={{ textTransform: 'uppercase' }}
                             />
                           </td>
                           <td>
@@ -1500,12 +1500,21 @@ export default function VentasPage() {
                                   ))}
                                 </select>
                               </td>
-                              {/* Vale/Número */}
+                              {/* Vale Lic. / Número */}
                               <td>
                                 <input
                                   className={cellStyle}
                                   value={inputs.numero}
                                   onChange={e => handleRegInputChange(r.id, 'numero', e.target.value)}
+                                  onBlur={() => handleRegBlur(r.id)}
+                                />
+                              </td>
+                              {/* Ticket / Serie */}
+                              <td>
+                                <input
+                                  className={cellStyle}
+                                  value={inputs.serie}
+                                  onChange={e => handleRegInputChange(r.id, 'serie', e.target.value)}
                                   onBlur={() => handleRegBlur(r.id)}
                                 />
                               </td>
@@ -1517,15 +1526,6 @@ export default function VentasPage() {
                                   onChange={e => handleRegInputChange(r.id, 'placa', e.target.value)}
                                   onBlur={() => handleRegBlur(r.id)}
                                   style={{ textTransform: 'uppercase' }}
-                                />
-                              </td>
-                              {/* Serie */}
-                              <td>
-                                <input
-                                  className={cellStyle}
-                                  value={inputs.serie}
-                                  onChange={e => handleRegInputChange(r.id, 'serie', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
                                 />
                               </td>
                               {/* Conductor */}

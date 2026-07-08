@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
+import type { ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
 import { formatSoles, toCentimos } from '@/lib/money'
 import { hoyLocal } from '@/lib/date'
@@ -17,7 +18,6 @@ interface RegistroRow {
   empresa_id: string | null
   empresa_nombre: string | null
   tipo_atencion: string
-  tipo_documento: string
   serie: string | null
   numero: string | null
   conductor: string | null
@@ -39,7 +39,6 @@ interface FormState {
   fecha: string
   empresa_id: string
   tipo_atencion: string
-  tipo_documento: string
   serie: string
   numero: string
   turno_id: string
@@ -72,7 +71,11 @@ type FiltroEstado = 'todos' | 'pendiente' | 'pagado'
 type Vista = 'activos' | 'papelera'
 
 const TIPOS_ATENCION = ['corporativo', 'licitacion', 'particular', 'chevron'] as const
-const TIPOS_DOC = ['vale', 'factura', 'boleta', 'nota_credito'] as const
+
+// Todos los registros de Seguimiento son vales, así que `tipo_documento` ya no
+// se pide ni se muestra: se manda este valor fijo (la columna es NOT NULL en
+// `registro_ventas`, con CHECK sobre los tipos permitidos).
+const TIPO_DOC_FIJO = 'vale'
 
 const TIPO_LABELS: Record<string, string> = {
   corporativo: 'Corporación',
@@ -82,11 +85,55 @@ const TIPO_LABELS: Record<string, string> = {
 }
 
 const FORM_INIT: FormState = {
-  fecha: '', empresa_id: '', tipo_atencion: 'corporativo', tipo_documento: 'vale',
+  fecha: '', empresa_id: '', tipo_atencion: 'corporativo',
   serie: '', numero: '', turno_id: '', conductor: '', placa: '', dni_conductor: '',
   tipo_combustible: '', cantidad_galones: '', precio_unit: '', estado_pago: 'pendiente',
   factura_numero: '', empresa_facturacion: '', fecha_facturacion: '', fecha_pago: '',
 }
+
+// ─── Columnas configurables de la tabla de registros ──────────────
+// El usuario elige cuáles ve y en qué orden ("Editar encabezado"). Es SOLO
+// presentación: los datos siempre se guardan y se traen completos desde Ventas.
+
+type ColKey =
+  | 'fecha' | 'empresa' | 'tipo' | 'vale' | 'ticket' | 'placa' | 'conductor'
+  | 'dni' | 'turno' | 'producto' | 'galones' | 'precio' | 'importe'
+  | 'factura' | 'estado'
+
+interface ColDef { key: ColKey; label: string; width: number }
+
+const COLUMNAS: ColDef[] = [
+  { key: 'fecha',     label: 'FECHA',     width: 92 },
+  { key: 'empresa',   label: 'EMPRESA',   width: 160 },
+  { key: 'tipo',      label: 'TIPO',      width: 84 },
+  { key: 'vale',      label: 'VALE LIC.', width: 96 },
+  { key: 'ticket',    label: 'TICKET',    width: 84 },
+  { key: 'placa',     label: 'PLACA',     width: 78 },
+  { key: 'conductor', label: 'CONDUCTOR', width: 130 },
+  { key: 'dni',       label: 'DNI',       width: 84 },
+  { key: 'turno',     label: 'TURNO',     width: 58 },
+  { key: 'producto',  label: 'PRODUCTO',  width: 80 },
+  { key: 'galones',   label: 'GALONES',   width: 80 },
+  { key: 'precio',    label: 'PRECIO/GL', width: 84 },
+  { key: 'importe',   label: 'IMPORTE',   width: 96 },
+  { key: 'factura',   label: 'FACTURA',   width: 96 },
+  { key: 'estado',    label: 'ESTADO',    width: 86 },
+]
+const COL_DEF = Object.fromEntries(COLUMNAS.map(c => [c.key, c])) as Record<ColKey, ColDef>
+// Alineación de las columnas numéricas (misma en cabecera, cuerpo y totales).
+const COL_ALIGN: Partial<Record<ColKey, string>> = {
+  turno: 'text-center', galones: 'text-right', precio: 'text-right', importe: 'text-right',
+}
+// Ancho de la columna de acciones (fija, siempre al final).
+const ANCHO_ACCIONES = 160
+
+/** Preferencia por columna: orden (posición en el array) + visibilidad. */
+type ColPref = { k: ColKey; on: boolean }
+// Por defecto se ocultan TICKET y DNI (existen, pero rara vez se consultan).
+const PREFS_DEFECTO: ColPref[] = COLUMNAS.map(c => ({
+  k: c.key,
+  on: c.key !== 'ticket' && c.key !== 'dni',
+}))
 
 // Rango por defecto del filtro: el mes en curso completo.
 function primerDiaMesActual(): string {
@@ -114,9 +161,8 @@ const CAMPOS_LOG: [key: string, label: string][] = [
   ['turno_id', 'Turno'],
   ['empresa_id', 'Empresa'],
   ['tipo_atencion', 'Tipo'],
-  ['tipo_documento', 'Documento'],
-  ['serie', 'Serie'],
-  ['numero', 'Número'],
+  ['serie', 'Ticket'],
+  ['numero', 'Vale Lic.'],
   ['conductor', 'Conductor'],
   ['placa', 'Placa'],
   ['dni_conductor', 'DNI conductor'],
@@ -153,6 +199,32 @@ function IconHistorial() {
   )
 }
 
+// Ícono "columnas" para el botón de Editar encabezado.
+function IconColumnas() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="9" y1="4" x2="9" y2="20" />
+      <line x1="15" y1="4" x2="15" y2="20" />
+    </svg>
+  )
+}
+
+// Puntos de agarre del arrastre (⠿) en cada fila del editor de encabezado.
+function IconArrastre() {
+  return (
+    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden>
+      {[2, 7, 12].map(cy => (
+        <Fragment key={cy}>
+          <circle cx="2.5" cy={cy} r="1.2" />
+          <circle cx="7.5" cy={cy} r="1.2" />
+        </Fragment>
+      ))}
+    </svg>
+  )
+}
+
 // ─── Componente principal ─────────────────────────────────────────
 
 export default function CorporativoPage() {
@@ -167,6 +239,12 @@ export default function CorporativoPage() {
   const [filtroEmpresas, setFiltroEmpresas] = usePersistedState<string[]>('seguimiento.filtroEmpresas', [])
   const [filtroEstado, setFiltroEstado] = usePersistedState<FiltroEstado>('seguimiento.filtroEstado', 'todos')
   const [vista, setVista] = useState<Vista>('activos')
+
+  // Columnas visibles y su orden (editor de encabezado). Solo presentación.
+  const [prefsRaw, setPrefs] = usePersistedState<ColPref[]>('seguimiento.columnas', PREFS_DEFECTO)
+  const [menuCols, setMenuCols] = useState(false)
+  const menuColsRef = useRef<HTMLDivElement>(null)
+  const arrastreRef = useRef<number | null>(null)
 
   const desdeRef = useRef<HTMLInputElement>(null)
   const hastaRef = useRef<HTMLInputElement>(null)
@@ -215,7 +293,7 @@ export default function CorporativoPage() {
       let query = supabase
         .from('registro_ventas')
         .select(
-          'id, fecha, turno_id, empresa_id, tipo_atencion, tipo_documento, ' +
+          'id, fecha, turno_id, empresa_id, tipo_atencion, ' +
           'serie, numero, conductor, placa, dni_conductor, ' +
           'tipo_combustible, cantidad_galones, precio_unit_centimos, importe_centimos, ' +
           'empresa_facturacion, factura_numero, fecha_facturacion, estado_pago, fecha_pago, ' +
@@ -358,7 +436,6 @@ export default function CorporativoPage() {
       fecha: row.fecha,
       empresa_id: row.empresa_id ?? '',
       tipo_atencion: row.tipo_atencion,
-      tipo_documento: row.tipo_documento,
       serie: row.serie ?? '',
       numero: row.numero ?? '',
       turno_id: String(row.turno_id),
@@ -393,7 +470,6 @@ export default function CorporativoPage() {
       fecha: form.fecha,
       empresa_id: form.empresa_id || null,
       tipo_atencion: form.tipo_atencion,
-      tipo_documento: form.tipo_documento,
       serie: form.serie.trim() || null,
       numero: form.numero.trim() || null,
       turno_id: parseInt(form.turno_id) || null,
@@ -410,10 +486,13 @@ export default function CorporativoPage() {
       estado_pago: form.estado_pago,
       fecha_pago: form.fecha_pago || null,
     }
-    // El insert exige colaborador_id (NOT NULL en registro_ventas); en el
-    // update NO se manda para conservar al creador original.
+    // El insert exige colaborador_id y tipo_documento (NOT NULL en
+    // registro_ventas); en el update NO se mandan, para conservar al creador
+    // original y no tocar un tipo_documento que la interfaz ya no expone.
     const { error } = editId === null
-      ? await supabase.from('registro_ventas').insert({ ...body, colaborador_id: profile?.id })
+      ? await supabase
+          .from('registro_ventas')
+          .insert({ ...body, colaborador_id: profile?.id, tipo_documento: TIPO_DOC_FIJO })
       : await supabase.from('registro_ventas').update(body).eq('id', editId)
     setSaving(false)
     if (error) {
@@ -546,6 +625,238 @@ export default function CorporativoPage() {
     return m
   }, [turnos])
 
+  // ─── Encabezado configurable ───────────────────────────────────
+
+  // Sanea lo persistido: descarta claves que ya no existen (p. ej. la vieja
+  // "doc") y añade al final las columnas nuevas de una versión posterior.
+  const prefs = useMemo(() => {
+    const validas = prefsRaw.filter(p => p && p.k in COL_DEF)
+    if (validas.length === 0) return PREFS_DEFECTO
+    const faltantes = PREFS_DEFECTO.filter(d => !validas.some(v => v.k === d.k))
+    return [...validas, ...faltantes]
+  }, [prefsRaw])
+
+  const cols = useMemo(() => prefs.filter(p => p.on).map(p => p.k), [prefs])
+  const anchoTabla = useMemo(
+    () => cols.reduce((t, k) => t + COL_DEF[k].width, 0) + ANCHO_ACCIONES,
+    [cols],
+  )
+
+  // Toggle de visibilidad; nunca deja el encabezado sin columnas.
+  function toggleCol(k: ColKey) {
+    setPrefs(() => {
+      if (cols.length === 1 && cols[0] === k) return prefs
+      return prefs.map(p => (p.k === k ? { ...p, on: !p.on } : p))
+    })
+  }
+  // Reordenar arrastrando: mueve la columna `desde` a la posición `hasta`.
+  function moverCol(desdeIdx: number, hastaIdx: number) {
+    if (desdeIdx === hastaIdx) return
+    setPrefs(() => {
+      const next = [...prefs]
+      const [item] = next.splice(desdeIdx, 1)
+      next.splice(hastaIdx, 0, item)
+      return next
+    })
+  }
+
+  // Cerrar el panel al hacer clic fuera o pulsar Escape.
+  useEffect(() => {
+    if (!menuCols) return
+    const fuera = (e: MouseEvent) => {
+      if (!menuColsRef.current?.contains(e.target as Node)) setMenuCols(false)
+    }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuCols(false) }
+    document.addEventListener('mousedown', fuera)
+    document.addEventListener('keydown', esc)
+    return () => {
+      document.removeEventListener('mousedown', fuera)
+      document.removeEventListener('keydown', esc)
+    }
+  }, [menuCols])
+
+  // ─── Celdas por columna ────────────────────────────────────────
+
+  /** Control de edición en línea de una columna (sin el <td> que lo envuelve). */
+  function controlEdicion(k: ColKey) {
+    switch (k) {
+      case 'fecha':
+        return <input type="date" className={cellInput} value={form.fecha}
+          onChange={e => setForm(p => ({ ...p, fecha: e.target.value }))} />
+      case 'empresa':
+        return (
+          <select
+            className={cellInput} value={form.empresa_id}
+            onChange={e => {
+              const emp = empresas.find(x => x.id === e.target.value)
+              setForm(p => ({
+                ...p,
+                empresa_id: e.target.value,
+                tipo_atencion: emp ? emp.tipo : p.tipo_atencion,
+              }))
+            }}
+          >
+            <option value="">— Sin empresa —</option>
+            {empresas.map(e => <option key={e.id} value={e.id}>{e.nombre}</option>)}
+          </select>
+        )
+      case 'tipo':
+        return (
+          <select className={cellInput} value={form.tipo_atencion}
+            onChange={e => setForm(p => ({ ...p, tipo_atencion: e.target.value }))}>
+            {TIPOS_ATENCION.map(t => <option key={t} value={t}>{TIPO_LABELS[t]}</option>)}
+          </select>
+        )
+      case 'vale':
+        return <input className={`${cellInput} font-mono`} placeholder="N° vale" value={form.numero}
+          onChange={e => setForm(p => ({ ...p, numero: e.target.value }))} />
+      case 'ticket':
+        return <input className={`${cellInput} font-mono`} placeholder="Serie" value={form.serie}
+          onChange={e => setForm(p => ({ ...p, serie: e.target.value }))} />
+      case 'placa':
+        return <input className={`${cellInput} font-mono uppercase`} value={form.placa}
+          onChange={e => setForm(p => ({ ...p, placa: e.target.value.toUpperCase() }))} />
+      case 'conductor':
+        return <input className={cellInput} value={form.conductor}
+          onChange={e => setForm(p => ({ ...p, conductor: e.target.value }))} />
+      case 'dni':
+        return <input className={`${cellInput} font-mono`} maxLength={8} value={form.dni_conductor}
+          onChange={e => setForm(p => ({ ...p, dni_conductor: e.target.value }))} />
+      case 'turno':
+        return (
+          <select className={cellInput} value={form.turno_id}
+            onChange={e => setForm(p => ({ ...p, turno_id: e.target.value }))}>
+            <option value="">—</option>
+            {turnos.map((t, i) => <option key={t.id} value={t.id}>{i + 1}</option>)}
+          </select>
+        )
+      case 'producto':
+        return (
+          <select className={cellInput} value={form.tipo_combustible}
+            onChange={e => setForm(p => ({ ...p, tipo_combustible: e.target.value }))}>
+            <option value="">—</option>
+            {combustibles.map(c => <option key={c.codigo} value={c.codigo}>{c.codigo}</option>)}
+          </select>
+        )
+      case 'galones':
+        return <input type="number" min="0" step="0.001" className={`${cellInput} text-right font-mono`}
+          value={form.cantidad_galones}
+          onChange={e => setForm(p => ({ ...p, cantidad_galones: e.target.value }))} />
+      case 'precio':
+        return <input type="number" min="0" step="0.01" className={`${cellInput} text-right font-mono`}
+          value={form.precio_unit}
+          onChange={e => setForm(p => ({ ...p, precio_unit: e.target.value }))} />
+      case 'importe':
+        return <span className="block text-right font-mono text-xs font-semibold">{fs(formImporte)}</span>
+      case 'factura':
+        return <input className={`${cellInput} font-mono`} placeholder="F001-…" value={form.factura_numero}
+          onChange={e => setForm(p => ({ ...p, factura_numero: e.target.value }))} />
+      case 'estado':
+        return (
+          <select
+            className={cellInput} value={form.estado_pago}
+            onChange={e => {
+              const v = e.target.value as 'pendiente' | 'pagado'
+              setForm(p => ({
+                ...p,
+                estado_pago: v,
+                fecha_pago: v === 'pagado' ? (p.fecha_pago || hoyLocal()) : '',
+              }))
+            }}
+          >
+            <option value="pendiente">Pendiente</option>
+            <option value="pagado">Pagado</option>
+          </select>
+        )
+    }
+  }
+
+  /** Contenido de una columna en modo lectura. */
+  function contenidoVista(k: ColKey, row: RegistroRow) {
+    switch (k) {
+      case 'fecha':     return row.fecha
+      case 'empresa':   return row.empresa_nombre ?? <span className="text-app-muted">—</span>
+      case 'tipo':      return (
+        <span className={`badge ${tipoBadgeClass(row.tipo_atencion)}`}>
+          {TIPO_LABELS[row.tipo_atencion] ?? row.tipo_atencion}
+        </span>
+      )
+      case 'vale':      return row.numero || '—'
+      case 'ticket':    return row.serie || '—'
+      case 'placa':     return row.placa || '—'
+      case 'conductor': return row.conductor || '—'
+      case 'dni':       return row.dni_conductor || '—'
+      case 'turno':     return turnoNumero[row.turno_id] ?? row.turno_id
+      case 'producto':  return row.tipo_combustible
+      case 'galones':   return row.cantidad_galones.toFixed(3)
+      case 'precio':    return fs(row.precio_unit_centimos)
+      case 'importe':   return fs(row.importe_centimos)
+      case 'factura':   return row.factura_numero ?? '—'
+      case 'estado':    return vista === 'papelera' ? (
+        <span
+          className="badge badge-danger"
+          title={row.deleted_at ? `Eliminado el ${new Date(row.deleted_at).toLocaleString('es-PE')}` : undefined}
+        >
+          Eliminado
+        </span>
+      ) : (
+        <button
+          onClick={() => togglePago(row)}
+          className={`badge cursor-pointer transition-opacity hover:opacity-75 ${
+            row.estado_pago === 'pagado' ? 'badge-success' : 'badge-danger'
+          }`}
+        >
+          {row.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
+        </button>
+      )
+    }
+  }
+
+  // Clases de la celda en modo lectura (tipografía por columna).
+  const CLASE_VISTA: Record<ColKey, string> = {
+    fecha: 'font-mono text-xs',
+    empresa: 'truncate',
+    tipo: '',
+    vale: 'font-mono text-xs',
+    ticket: 'font-mono text-xs',
+    placa: 'font-mono text-xs',
+    conductor: 'truncate text-xs',
+    dni: 'font-mono text-xs',
+    turno: 'text-center text-xs font-medium',
+    producto: 'text-xs font-medium',
+    galones: 'text-right font-mono text-xs',
+    precio: 'text-right font-mono text-xs',
+    importe: 'text-right font-mono text-xs font-medium',
+    factura: 'font-mono text-xs',
+    estado: '',
+  }
+
+  /**
+   * Fila de totales adaptada al encabezado: la etiqueta ocupa las columnas
+   * anteriores a la primera que lleva número, y de ahí en adelante cada columna
+   * imprime su valor (o nada).
+   */
+  function filaTotales(
+    label: string,
+    valores: Partial<Record<ColKey, ReactNode>>,
+    trClass: string,
+    tdClass = '',
+  ) {
+    const primera = cols.findIndex(k => k in valores)
+    const corte = Math.max(primera === -1 ? cols.length : primera, 1)
+    return (
+      <tr className={trClass}>
+        <td colSpan={corte} className={`px-2 py-1 text-xs ${tdClass || 'text-app-muted'}`}>{label}</td>
+        {cols.slice(corte).map(k => (
+          <td key={k} className={`px-2 py-1 text-right font-mono text-xs ${tdClass}`}>
+            {valores[k] ?? null}
+          </td>
+        ))}
+        <td />
+      </tr>
+    )
+  }
+
   // ─── Render ───────────────────────────────────────────────────
 
   return (
@@ -648,6 +959,68 @@ export default function CorporativoPage() {
               >
                 🗑 Papelera
               </button>
+
+              {/* Editar encabezado: qué columnas se ven y en qué orden */}
+              <div className="relative" ref={menuColsRef}>
+                <button
+                  onClick={() => setMenuCols(v => !v)}
+                  className={`flex items-center gap-1 rounded border px-2 py-1 text-xs transition-colors ${
+                    menuCols
+                      ? 'border-primary bg-primary text-primary-text font-medium'
+                      : 'border-app-border text-app-muted hover:bg-app-border hover:text-app-text'
+                  }`}
+                  title="Elegir qué columnas se muestran y en qué orden (no afecta a los datos)"
+                >
+                  <IconColumnas />
+                  Editar encabezado
+                </button>
+
+                {menuCols && (
+                  <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-lg border border-app-border bg-white p-2 shadow-lg">
+                    <div className="mb-1.5 flex items-baseline justify-between gap-2 px-1">
+                      <span className="text-[11px] font-semibold text-app-text">Columnas</span>
+                      <button
+                        className="text-[11px] text-app-muted underline-offset-2 hover:text-app-text hover:underline"
+                        onClick={() => setPrefs(() => PREFS_DEFECTO.map(p => ({ ...p })))}
+                      >
+                        Restablecer
+                      </button>
+                    </div>
+                    <p className="mb-1.5 px-1 text-[10px] leading-snug text-app-muted">
+                      Marca las que quieras ver y arrastra ⠿ para cambiar el orden.
+                    </p>
+                    <ul className="max-h-72 overflow-y-auto">
+                      {prefs.map((p, i) => (
+                        <li
+                          key={p.k}
+                          draggable
+                          onDragStart={() => { arrastreRef.current = i }}
+                          onDragEnd={() => { arrastreRef.current = null }}
+                          onDragOver={e => {
+                            e.preventDefault()
+                            const desdeIdx = arrastreRef.current
+                            if (desdeIdx == null || desdeIdx === i) return
+                            moverCol(desdeIdx, i)
+                            arrastreRef.current = i
+                          }}
+                          className="flex cursor-grab items-center gap-2 rounded px-1 py-1 hover:bg-slate-50 active:cursor-grabbing"
+                        >
+                          <span className="text-app-muted"><IconArrastre /></span>
+                          <label className="flex flex-1 cursor-pointer items-center gap-2 text-xs text-app-text">
+                            <input
+                              type="checkbox"
+                              checked={p.on}
+                              onChange={() => toggleCol(p.k)}
+                              className="h-3.5 w-3.5 accent-blue-600"
+                            />
+                            {COL_DEF[p.k].label}
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
             </>
           )}
 
@@ -664,171 +1037,34 @@ export default function CorporativoPage() {
         {loading ? (
           <p className="p-6 text-sm text-app-muted">Cargando…</p>
         ) : tab === 'registros' ? (
-          <table className="table-excel table-fixed" style={{ minWidth: 1450 }}>
+          <table className="table-excel table-fixed" style={{ minWidth: anchoTabla }}>
             <thead>
               <tr>
-                <th style={{ width: 92 }}>FECHA</th>
-                <th style={{ width: 160 }}>EMPRESA</th>
-                <th style={{ width: 84 }}>TIPO</th>
-                <th style={{ width: 70 }}>DOC</th>
-                <th style={{ width: 96 }}>VALE / N°</th>
-                <th style={{ width: 78 }}>PLACA</th>
-                <th style={{ width: 130 }}>CONDUCTOR</th>
-                <th className="text-center" style={{ width: 58 }}>TURNO</th>
-                <th style={{ width: 80 }}>PRODUCTO</th>
-                <th className="text-right" style={{ width: 80 }}>GALONES</th>
-                <th className="text-right" style={{ width: 84 }}>PRECIO/GL</th>
-                <th className="text-right" style={{ width: 96 }}>IMPORTE</th>
-                <th style={{ width: 96 }}>FACTURA</th>
-                <th style={{ width: 86 }}>ESTADO</th>
-                <th style={{ width: 160 }} />
+                {cols.map(k => (
+                  <th key={k} className={COL_ALIGN[k]} style={{ width: COL_DEF[k].width }}>
+                    {COL_DEF[k].label}
+                  </th>
+                ))}
+                <th style={{ width: ANCHO_ACCIONES }} />
               </tr>
             </thead>
             <tbody>
               {rowsFiltradas.map(row => {
-                const valeNum = [row.serie, row.numero].filter(Boolean).join('-')
                 const enEdicion = editId === row.id
                 const otraEnEdicion = editId !== null && !enEdicion
 
                 // ── Fila en edición: inputs en línea, fila resaltada ──
                 if (enEdicion) {
+                  // Los campos cuya columna está oculta se editan en la segunda
+                  // fila, para que ocultar una columna nunca impida corregirla.
+                  // `importe` se calcula, así que nunca es editable.
+                  const ocultosEditables = COLUMNAS
+                    .map(c => c.key)
+                    .filter(k => k !== 'importe' && !cols.includes(k))
                   return (
                     <Fragment key={row.id}>
                       <tr className="!bg-blue-50">
-                        <td>
-                          <input
-                            type="date" className={cellInput} value={form.fecha}
-                            onChange={e => setForm(p => ({ ...p, fecha: e.target.value }))}
-                          />
-                        </td>
-                        <td>
-                          <select
-                            className={cellInput} value={form.empresa_id}
-                            onChange={e => {
-                              const emp = empresas.find(x => x.id === e.target.value)
-                              setForm(p => ({
-                                ...p,
-                                empresa_id: e.target.value,
-                                tipo_atencion: emp ? emp.tipo : p.tipo_atencion,
-                              }))
-                            }}
-                          >
-                            <option value="">— Sin empresa —</option>
-                            {empresas.map(e => (
-                              <option key={e.id} value={e.id}>{e.nombre}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <select
-                            className={cellInput} value={form.tipo_atencion}
-                            onChange={e => setForm(p => ({ ...p, tipo_atencion: e.target.value }))}
-                          >
-                            {TIPOS_ATENCION.map(t => (
-                              <option key={t} value={t}>{TIPO_LABELS[t]}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <select
-                            className={`${cellInput} capitalize`} value={form.tipo_documento}
-                            onChange={e => setForm(p => ({ ...p, tipo_documento: e.target.value }))}
-                          >
-                            {TIPOS_DOC.map(t => (
-                              <option key={t} value={t}>{t.replace('_', ' ')}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <div className="flex gap-0.5">
-                            <input
-                              className={`${cellInput} font-mono`} style={{ width: 34 }}
-                              placeholder="001" title="Serie" value={form.serie}
-                              onChange={e => setForm(p => ({ ...p, serie: e.target.value }))}
-                            />
-                            <input
-                              className={`${cellInput} font-mono flex-1`} style={{ minWidth: 0 }}
-                              placeholder="N°" title="Número" value={form.numero}
-                              onChange={e => setForm(p => ({ ...p, numero: e.target.value }))}
-                            />
-                          </div>
-                        </td>
-                        <td>
-                          <input
-                            className={`${cellInput} font-mono uppercase`} value={form.placa}
-                            onChange={e => setForm(p => ({ ...p, placa: e.target.value.toUpperCase() }))}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            className={cellInput} value={form.conductor}
-                            onChange={e => setForm(p => ({ ...p, conductor: e.target.value }))}
-                          />
-                        </td>
-                        <td>
-                          <select
-                            className={cellInput} value={form.turno_id}
-                            onChange={e => setForm(p => ({ ...p, turno_id: e.target.value }))}
-                          >
-                            <option value="">—</option>
-                            {turnos.map((t, i) => (
-                              <option key={t.id} value={t.id}>{i + 1}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <select
-                            className={cellInput} value={form.tipo_combustible}
-                            onChange={e => setForm(p => ({ ...p, tipo_combustible: e.target.value }))}
-                          >
-                            <option value="">—</option>
-                            {combustibles.map(c => (
-                              <option key={c.codigo} value={c.codigo}>{c.codigo}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <input
-                            type="number" min="0" step="0.001"
-                            className={`${cellInput} text-right font-mono`}
-                            value={form.cantidad_galones}
-                            onChange={e => setForm(p => ({ ...p, cantidad_galones: e.target.value }))}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number" min="0" step="0.01"
-                            className={`${cellInput} text-right font-mono`}
-                            value={form.precio_unit}
-                            onChange={e => setForm(p => ({ ...p, precio_unit: e.target.value }))}
-                          />
-                        </td>
-                        <td className="text-right font-mono text-xs font-semibold">
-                          {fs(formImporte)}
-                        </td>
-                        <td>
-                          <input
-                            className={`${cellInput} font-mono`} placeholder="F001-…"
-                            value={form.factura_numero}
-                            onChange={e => setForm(p => ({ ...p, factura_numero: e.target.value }))}
-                          />
-                        </td>
-                        <td>
-                          <select
-                            className={cellInput} value={form.estado_pago}
-                            onChange={e => {
-                              const v = e.target.value as 'pendiente' | 'pagado'
-                              setForm(p => ({
-                                ...p,
-                                estado_pago: v,
-                                fecha_pago: v === 'pagado' ? (p.fecha_pago || hoyLocal()) : '',
-                              }))
-                            }}
-                          >
-                            <option value="pendiente">Pendiente</option>
-                            <option value="pagado">Pagado</option>
-                          </select>
-                        </td>
+                        {cols.map(k => <td key={k}>{controlEdicion(k)}</td>)}
                         <td>
                           <div className="flex gap-1">
                             <button
@@ -846,16 +1082,16 @@ export default function CorporativoPage() {
                       </tr>
                       {/* Campos secundarios de la misma edición (sin modal) */}
                       <tr className="!bg-blue-50">
-                        <td colSpan={15} className="!whitespace-normal">
+                        <td colSpan={cols.length + 1} className="!whitespace-normal">
                           <div className="flex flex-wrap items-end gap-3 px-1 py-1">
-                            <label className="flex items-center gap-1 text-[11px] text-app-muted">
-                              DNI conductor
-                              <input
-                                className="input h-6 w-24 py-0 font-mono text-xs" maxLength={8}
-                                value={form.dni_conductor}
-                                onChange={e => setForm(p => ({ ...p, dni_conductor: e.target.value }))}
-                              />
-                            </label>
+                            {ocultosEditables.map(k => (
+                              <label key={k} className="flex items-center gap-1 text-[11px] text-app-muted">
+                                {COL_DEF[k].label}
+                                <span className="inline-block" style={{ width: Math.max(COL_DEF[k].width, 96) }}>
+                                  {controlEdicion(k)}
+                                </span>
+                              </label>
+                            ))}
                             <label className="flex items-center gap-1 text-[11px] text-app-muted">
                               Empresa facturación
                               <input
@@ -900,42 +1136,9 @@ export default function CorporativoPage() {
                       ? 'pointer-events-none select-none opacity-30'
                       : ''} ${row.deleted_at ? 'text-app-muted' : ''}`}
                   >
-                    <td className="font-mono text-xs">{row.fecha}</td>
-                    <td className="truncate">{row.empresa_nombre ?? <span className="text-app-muted">—</span>}</td>
-                    <td>
-                      <span className={`badge ${tipoBadgeClass(row.tipo_atencion)}`}>
-                        {TIPO_LABELS[row.tipo_atencion] ?? row.tipo_atencion}
-                      </span>
-                    </td>
-                    <td className="text-xs capitalize">{row.tipo_documento}</td>
-                    <td className="font-mono text-xs">{valeNum || '—'}</td>
-                    <td className="font-mono text-xs">{row.placa ?? '—'}</td>
-                    <td className="truncate text-xs">{row.conductor ?? '—'}</td>
-                    <td className="text-center text-xs font-medium">{turnoNumero[row.turno_id] ?? row.turno_id}</td>
-                    <td className="text-xs font-medium">{row.tipo_combustible}</td>
-                    <td className="text-right font-mono text-xs">{row.cantidad_galones.toFixed(3)}</td>
-                    <td className="text-right font-mono text-xs">{fs(row.precio_unit_centimos)}</td>
-                    <td className="text-right font-mono text-xs font-medium">{fs(row.importe_centimos)}</td>
-                    <td className="font-mono text-xs">{row.factura_numero ?? '—'}</td>
-                    <td>
-                      {vista === 'papelera' ? (
-                        <span
-                          className="badge badge-danger"
-                          title={row.deleted_at ? `Eliminado el ${new Date(row.deleted_at).toLocaleString('es-PE')}` : undefined}
-                        >
-                          Eliminado
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => togglePago(row)}
-                          className={`badge cursor-pointer transition-opacity hover:opacity-75 ${
-                            row.estado_pago === 'pagado' ? 'badge-success' : 'badge-danger'
-                          }`}
-                        >
-                          {row.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
-                        </button>
-                      )}
-                    </td>
+                    {cols.map(k => (
+                      <td key={k} className={CLASE_VISTA[k]}>{contenidoVista(k, row)}</td>
+                    ))}
                     <td>
                       <div className="flex items-center gap-1">
                         {/* Historial: botón propio (ya NO es clic en toda la fila) */}
@@ -971,7 +1174,7 @@ export default function CorporativoPage() {
 
               {rowsFiltradas.length === 0 && (
                 <tr>
-                  <td colSpan={15} className="py-10 text-center text-sm text-app-muted">
+                  <td colSpan={cols.length + 1} className="py-10 text-center text-sm text-app-muted">
                     {vista === 'papelera'
                       ? 'La papelera está vacía para el periodo y filtros seleccionados'
                       : 'Sin registros para los filtros seleccionados'}
@@ -982,25 +1185,16 @@ export default function CorporativoPage() {
 
             {rowsFiltradas.length > 0 && (
               <tfoot>
-                <tr className="bg-slate-100 font-semibold">
-                  <td colSpan={9} className="px-2 py-1 text-xs text-app-muted">
-                    TOTALES — {rowsFiltradas.length} registros
-                  </td>
-                  <td className="px-2 py-1 text-right font-mono text-xs">{totales.galones.toFixed(3)}</td>
-                  <td />
-                  <td className="px-2 py-1 text-right font-mono text-xs">{fs(totales.importe)}</td>
-                  <td colSpan={3} />
-                </tr>
-                {vista === 'activos' && totales.pendiente > 0 && (
-                  <tr className="bg-red-50">
-                    <td colSpan={11} className="px-2 py-1 text-xs font-medium text-danger-text">
-                      PENDIENTE DE COBRO
-                    </td>
-                    <td className="px-2 py-1 text-right font-mono text-xs font-semibold text-danger-text">
-                      {fs(totales.pendiente)}
-                    </td>
-                    <td colSpan={3} />
-                  </tr>
+                {filaTotales(
+                  `TOTALES — ${rowsFiltradas.length} registros`,
+                  { galones: totales.galones.toFixed(3), importe: fs(totales.importe) },
+                  'bg-slate-100 font-semibold',
+                )}
+                {vista === 'activos' && totales.pendiente > 0 && filaTotales(
+                  'PENDIENTE DE COBRO',
+                  { importe: fs(totales.pendiente) },
+                  'bg-red-50',
+                  'font-semibold text-danger-text',
                 )}
               </tfoot>
             )}
@@ -1118,31 +1312,20 @@ export default function CorporativoPage() {
                 </div>
               </div>
 
-              {/* Tipo doc + Serie + Número */}
+              {/* Vale Lic. + Ticket */}
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <label className="mb-1 block text-xs text-app-muted">Tipo documento</label>
-                  <select
-                    className="input capitalize" value={form.tipo_documento}
-                    onChange={e => setForm(p => ({ ...p, tipo_documento: e.target.value }))}
-                  >
-                    {TIPOS_DOC.map(t => (
-                      <option key={t} value={t}>{t.replace('_', ' ')}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex-1">
-                  <label className="mb-1 block text-xs text-app-muted">Serie</label>
-                  <input
-                    className="input font-mono" value={form.serie} placeholder="001"
-                    onChange={e => setForm(p => ({ ...p, serie: e.target.value }))}
-                  />
-                </div>
-                <div className="flex-1">
-                  <label className="mb-1 block text-xs text-app-muted">Número</label>
+                  <label className="mb-1 block text-xs text-app-muted">Vale Lic. (N°)</label>
                   <input
                     className="input font-mono" value={form.numero} placeholder="00001"
                     onChange={e => setForm(p => ({ ...p, numero: e.target.value }))}
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="mb-1 block text-xs text-app-muted">Ticket (serie)</label>
+                  <input
+                    className="input font-mono" value={form.serie} placeholder="001"
+                    onChange={e => setForm(p => ({ ...p, serie: e.target.value }))}
                   />
                 </div>
               </div>

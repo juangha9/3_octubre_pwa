@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-06** (auditoría + soft delete + rango de fechas en Seguimiento, gráfico OSINERGMIN, desempate de ranking)
+Última actualización: **2026-07-07** (fix eje del gráfico OSINERGMIN, encabezado configurable en Seguimiento, VALE LIC. + orden de columnas en Ventas)
 
 ## Módulos completados
 
@@ -154,6 +154,25 @@ metadata:
 
 ### Otros
 - **Fix build pre-existente**: `npm i -D @types/node` + `vite.config.ts` migrado de `path/__dirname` a `fileURLToPath(new URL(...))`; `CompraModal.tsx` tipa `productosEnCompra: string[]` (error TS2345). `npm run build` (tsc -b + vite) ahora pasa en verde.
+
+## Cambios de esta sesión (2026-07-07)
+
+### OSINERGMIN — el gráfico mostraba puestos distintos a las tarjetas
+1. **Fix desfase gráfico ↔ tarjetas** (`OsinergminPage`): el gráfico daba 2/3/3 cuando las tarjetas (último snapshot) decían 2/5/4 porque su serie propia dejaba fuera el snapshot más reciente. Tres causas corregidas:
+   - **`fecha_consulta` es `timestamptz`** pero el filtro comparaba contra el texto `YYYY-MM-DD` (medianoche UTC) → recortaba las últimas 5 h del día en Perú (UTC-5), justo donde cae el snapshot del cron. Ahora manda instantes UTC (`new Date(\`${desde}T00:00:00\`).toISOString()` … `T23:59:59.999`).
+   - **`hasta` se guardaba como fecha absoluta** en localStorage → al día siguiente excluía lo nuevo. Ahora **sigue a "hoy"** salvo que el usuario lo fije a mano (`osinergmin.grafico.hastaSigueHoy`; `aplicarHasta()` decide).
+   - **`refreshKey`** ahora es `${id}:${fecha_consulta}` (antes solo `id`): cuando el Top 10 no cambia, el cron solo refresca `fecha_consulta` del MISMO snapshot y el gráfico no re-consultaba.
+
+### Seguimiento (CorporativoPage) — encabezado configurable + quitar DOC
+2. **Columna DOC eliminada**: todos los registros son vales → se quitó `tipo_documento` del tipo `RegistroRow`, `FormState`, `FORM_INIT`, el modal, la edición en línea y `CAMPOS_LOG`. Al **insertar** se manda fijo `tipo_documento: TIPO_DOC_FIJO` ('vale') porque la columna es `NOT NULL` con CHECK en BD; en **update** ya no se toca.
+3. **"Editar encabezado"** (botón nuevo junto a 🗑 Papelera): panel para **mostrar/ocultar** columnas (checkbox), **reordenar arrastrando** (⠿, HTML5 drag&drop) y **Restablecer**. Es SOLO presentación — los datos siempre se guardan/traen completos desde Ventas. Preferencia persistida (`seguimiento.columnas`). TICKET y DNI se **añadieron** como columnas (antes no estaban en la tabla) y salen **ocultas por defecto** (`PREFS_DEFECTO`). Si editas y una columna está oculta, su campo aparece igual en la fila secundaria de edición (para que ocultar nunca impida corregir). La tabla, los `<th>`, los totales y "pendiente de cobro" se generan **dinámicamente** desde `cols` (`filaTotales()` calcula los `colSpan`).
+   - **⚠️ AL AGREGAR UNA COLUMNA NUEVA A SEGUIMIENTO en el futuro**: hay que registrarla en el arreglo **`COLUMNAS`** (key/label/width) al inicio de `CorporativoPage.tsx`, y añadir su `case` en **`controlEdicion()`** (input de edición), **`contenidoVista()`** (modo lectura) y **`CLASE_VISTA`** (tipografía de la celda). Con eso aparece automáticamente en el editor de encabezado (checkbox + arrastre) y en la tabla; no hay que tocar el `<thead>`/`<tbody>` a mano. Si la columna es numérica, agregar también su alineación en `COL_ALIGN` y, si debe sumarse, su valor en las llamadas a `filaTotales()`. Por defecto queda visible salvo que se excluya en `PREFS_DEFECTO`.
+
+### Ventas (VentasDelDiaPage) — modo COMPLETO
+4. **`VALE` → `VALE LIC.`** en el encabezado de la tabla de vales (modo Completo).
+5. **PLACA ↔ TICKET intercambiadas**: el orden pasó a VALE LIC. · **TICKET** · **PLACA** (antes VALE · PLACA · TICKET), tanto en la fila de entrada rápida como en las filas editables. Los campos subyacentes no cambian (`numero`/`serie`/`placa`); solo el orden visual de las celdas.
+
+- `npx tsc -p tsconfig.app.json --noEmit` verificado sin errores.
 
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.

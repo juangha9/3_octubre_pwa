@@ -80,7 +80,17 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
   const [verEmpresas, setVerEmpresas] = usePersistedState('osinergmin.grafico.empresas', false)
   // Rango de fechas propio del gráfico (por defecto, últimos 30 días).
   const [desde, setDesde] = usePersistedState('osinergmin.grafico.desde', () => haceDias(30))
-  const [hasta, setHasta] = usePersistedState('osinergmin.grafico.hasta', hoyLocal)
+  // `hasta` se persiste, pero mientras el usuario no lo fije a mano SIGUE a "hoy".
+  // Guardar la fecha absoluta hacía que, al día siguiente, el gráfico dejara
+  // fuera el snapshot más reciente y mostrara un puesto distinto al de las
+  // tarjetas de arriba (que siempre leen el último snapshot).
+  const [hastaFijo, setHastaFijo] = usePersistedState('osinergmin.grafico.hasta', hoyLocal)
+  const [hastaSigueHoy, setHastaSigueHoy] = usePersistedState('osinergmin.grafico.hastaSigueHoy', true)
+  const hasta = hastaSigueHoy ? hoyLocal() : hastaFijo
+  function aplicarHasta(v: string) {
+    setHastaFijo(v)
+    setHastaSigueHoy(v === hoyLocal())
+  }
   const [hoverIdx, setHoverIdx] = useState<number | null>(null)
 
   // Datos del rango (se cargan aquí, sin depender del límite de la página)
@@ -103,14 +113,18 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
   }, [])
 
   // Carga los snapshots del rango (fecha_consulta entre desde y hasta), asc.
+  // `fecha_consulta` es timestamptz: hay que mandar instantes UTC. Comparar
+  // contra el texto "YYYY-MM-DD" lo interpretaba como medianoche UTC y recortaba
+  // las últimas 5 horas del día en Perú (UTC-5) — justo donde suele caer el
+  // snapshot más reciente del cron.
   useEffect(() => {
     let cancel = false
     setCargando(true)
     supabase
       .from('osinergmin_snapshots')
       .select('*')
-      .gte('fecha_consulta', desde)
-      .lte('fecha_consulta', hasta + 'T23:59:59.999')
+      .gte('fecha_consulta', new Date(`${desde}T00:00:00`).toISOString())
+      .lte('fecha_consulta', new Date(`${hasta}T23:59:59.999`).toISOString())
       .order('fecha_consulta', { ascending: true })
       .then(({ data }) => {
         if (cancel) return
@@ -124,7 +138,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
   function cambiarDesde(v: string) {
     if (!v) return
     setDesde(v)
-    if (hasta && v > hasta) setHasta(v)
+    if (hasta && v > hasta) aplicarHasta(v)
     if (encadenarHastaRef.current) {
       encadenarHastaRef.current = false
       try { hastaRef.current?.showPicker() } catch { /* requiere gesto; se ignora */ }
@@ -132,7 +146,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
   }
   function cambiarHasta(v: string) {
     if (!v) return
-    setHasta(v)
+    aplicarHasta(v)
     if (desde && v < desde) setDesde(v)
   }
   function abrirCalendarios() {
@@ -141,7 +155,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
   }
   function preset(dias: number) {
     setDesde(haceDias(dias))
-    setHasta(hoyLocal())
+    aplicarHasta(hoyLocal())
   }
 
   // Sanea lo persistido (por si quedó un valor viejo en localStorage)
@@ -812,8 +826,10 @@ export default function OsinergminPage() {
             <span className="text-xs text-app-muted">#1 = el precio más bajo del distrito (eje invertido: subir es mejor)</span>
           </div>
           {/* El gráfico carga su propio rango de fechas; `refreshKey` lo hace
-              re-consultar cuando llega un snapshot nuevo por Realtime. */}
-          <RankingChart refreshKey={actual?.id ?? null} />
+              re-consultar cuando llega un snapshot nuevo por Realtime. Incluye
+              la fecha porque, si el Top 10 no cambió, el cron solo refresca
+              `fecha_consulta` del snapshot existente (mismo id). */}
+          <RankingChart refreshKey={actual ? `${actual.id}:${actual.fecha_consulta}` : null} />
 
           <h3 className="mb-2 mt-5 text-sm font-semibold text-app-text">Detalle por consulta</h3>
           <table className="table-excel w-auto">
