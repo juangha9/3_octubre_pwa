@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
 import { usePersistedState } from '@/lib/usePersistedState'
+import { useTheme } from '@/lib/theme'
 import { hoyLocal } from '@/lib/date'
 import type { OsinergminSnapshot, OsinergminTop10 } from '@/types'
 
@@ -71,6 +72,18 @@ type TipoGrafico = 'lineas' | 'barras'
 // `refreshKey` cambia cuando la página recibe un snapshot nuevo (Realtime) →
 // el gráfico re-consulta su rango para no quedar desfasado.
 function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
+  // Colores del SVG según tema: los atributos de presentación SVG (stroke/fill)
+  // no resuelven var(--…) de CSS, así que se eligen aquí en JS.
+  const { theme } = useTheme()
+  const dark = theme === 'dark'
+  const CHART = {
+    grid: dark ? '#334155' : '#E2E8F0',
+    axis: dark ? '#475569' : '#CBD5E1',
+    label: dark ? '#94A3B8' : '#64748B',
+    labelStrong: dark ? '#CBD5E1' : '#334155',
+    pointStroke: dark ? '#1E293B' : '#FFFFFF',
+    dotOff: dark ? '#475569' : '#CBD5E1',
+  }
   const [tipo, setTipo] = usePersistedState<TipoGrafico>('osinergmin.grafico.tipo', 'lineas')
   const [visiblesRaw, setVisibles] = usePersistedState<ProductoCode[]>(
     'osinergmin.grafico.productos',
@@ -315,7 +328,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
             >
               <span
                 className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ background: on ? SERIE_COLOR[p.code] : '#CBD5E1' }}
+                style={{ background: on ? SERIE_COLOR[p.code] : CHART.dotOff }}
               />
               {p.label}
             </button>
@@ -332,7 +345,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
         >
           <span
             className="inline-block h-0 w-3.5 border-t-2 border-dashed"
-            style={{ borderColor: verEmpresas ? EMPRESAS_COLOR : '#CBD5E1' }}
+            style={{ borderColor: verEmpresas ? EMPRESAS_COLOR : CHART.dotOff }}
           />
           Nº empresas
         </button>
@@ -412,19 +425,19 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
             {/* Rejilla horizontal + etiquetas de puesto */}
             {ticks.map(r => (
               <g key={r}>
-                <line x1={ml} x2={ml + plotW} y1={y(r)} y2={y(r)} stroke="#E2E8F0" strokeWidth={1} />
-                <text x={ml - 6} y={y(r) + 3} textAnchor="end" fontSize={10} fill="#64748B">
+                <line x1={ml} x2={ml + plotW} y1={y(r)} y2={y(r)} stroke={CHART.grid} strokeWidth={1} />
+                <text x={ml - 6} y={y(r) + 3} textAnchor="end" fontSize={10} fill={CHART.label}>
                   #{r}
                 </text>
               </g>
             ))}
             {/* Línea base inferior */}
-            <line x1={ml} x2={ml + plotW} y1={mt + plotH} y2={mt + plotH} stroke="#CBD5E1" strokeWidth={1} />
+            <line x1={ml} x2={ml + plotW} y1={mt + plotH} y2={mt + plotH} stroke={CHART.axis} strokeWidth={1} />
 
             {/* Fechas del eje X */}
             {serie.map((s, i) =>
               (i % labelStep === 0 || i === n - 1) ? (
-                <text key={s.id} x={x(i)} y={H - 8} textAnchor="middle" fontSize={10} fill="#64748B">
+                <text key={s.id} x={x(i)} y={H - 8} textAnchor="middle" fontSize={10} fill={CHART.label}>
                   {fechaCorta(s.fecha_consulta)}
                 </text>
               ) : null
@@ -491,7 +504,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
                       key={`lbl-${p.code}`}
                       x={x0 + j * (barW + 2) + barW / 2}
                       y={y(rankingDe(s, p.code)!) - 4}
-                      textAnchor="middle" fontSize={9} fontWeight={600} fill="#334155"
+                      textAnchor="middle" fontSize={9} fontWeight={600} fill={CHART.labelStrong}
                     >
                       #{rankingDe(s, p.code)}
                     </text>
@@ -506,7 +519,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
                 {hoverIdx != null && (
                   <line
                     x1={x(hoverIdx)} x2={x(hoverIdx)} y1={mt} y2={mt + plotH}
-                    stroke="#CBD5E1" strokeWidth={1}
+                    stroke={CHART.axis} strokeWidth={1}
                   />
                 )}
                 {visProductos.map(p => (
@@ -526,7 +539,7 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
                     <circle
                       key={`${p.code}-${i}`}
                       cx={x(i)} cy={y(r)} r={4}
-                      fill={SERIE_COLOR[p.code]} stroke="#FFFFFF" strokeWidth={2}
+                      fill={SERIE_COLOR[p.code]} stroke={CHART.pointStroke} strokeWidth={2}
                     />
                   ))
                 )}
@@ -537,12 +550,12 @@ function RankingChart({ refreshKey }: { refreshKey: string | number | null }) {
                       <line
                         x1={ml + plotW - band / 2 + 6} y1={l.yPunto}
                         x2={ml + plotW + 4} y2={l.yLabel - 3}
-                        stroke="#CBD5E1" strokeWidth={1}
+                        stroke={CHART.axis} strokeWidth={1}
                       />
                     )}
-                    <text x={ml + plotW + 8} y={l.yLabel} fontSize={10} fill="#334155">
+                    <text x={ml + plotW + 8} y={l.yLabel} fontSize={10} fill={CHART.labelStrong}>
                       <tspan fontWeight={700}>#{l.rank}</tspan>
-                      <tspan fill="#64748B" dx={3} fontSize={9}>{l.code}</tspan>
+                      <tspan fill={CHART.label} dx={3} fontSize={9}>{l.code}</tspan>
                     </text>
                   </g>
                 ))}

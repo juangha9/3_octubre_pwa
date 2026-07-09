@@ -2,43 +2,47 @@ import type { Config } from 'tailwindcss'
 
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  darkMode: ['selector', '[data-theme="dark"]'],
   theme: {
     extend: {
       fontFamily: {
         sans: ['Roboto', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
+      // Todos los tokens se resuelven vía variables CSS (definidas en index.css)
+      // para que el tema claro/oscuro se aplique automáticamente a cualquier
+      // clase `bg-primary`, `text-app-text`, `border-app-border`, etc.
       colors: {
         primary: {
-          DEFAULT: '#BAD6F5',
-          dark: '#91BEE9',
-          text: '#1E3A5F',
+          DEFAULT: 'rgb(var(--c-primary) / <alpha-value>)',
+          dark: 'rgb(var(--c-primary-dark) / <alpha-value>)',
+          text: 'rgb(var(--c-primary-text) / <alpha-value>)',
         },
         success: {
-          DEFAULT: '#BBF7D0',
-          dark: '#86EFAC',
-          text: '#14532D',
+          DEFAULT: 'rgb(var(--c-success) / <alpha-value>)',
+          dark: 'rgb(var(--c-success-dark) / <alpha-value>)',
+          text: 'rgb(var(--c-success-text) / <alpha-value>)',
         },
         warning: {
-          DEFAULT: '#FDE68A',
-          dark: '#FCD34D',
-          text: '#78350F',
+          DEFAULT: 'rgb(var(--c-warning) / <alpha-value>)',
+          dark: 'rgb(var(--c-warning-dark) / <alpha-value>)',
+          text: 'rgb(var(--c-warning-text) / <alpha-value>)',
         },
         danger: {
-          DEFAULT: '#FECACA',
-          dark: '#FCA5A5',
-          text: '#7F1D1D',
+          DEFAULT: 'rgb(var(--c-danger) / <alpha-value>)',
+          dark: 'rgb(var(--c-danger-dark) / <alpha-value>)',
+          text: 'rgb(var(--c-danger-text) / <alpha-value>)',
         },
         accent: {
-          DEFAULT: '#FED7AA',
-          dark: '#FDBA74',
-          text: '#7C2D12',
+          DEFAULT: 'rgb(var(--c-accent) / <alpha-value>)',
+          dark: 'rgb(var(--c-accent-dark) / <alpha-value>)',
+          text: 'rgb(var(--c-accent-text) / <alpha-value>)',
         },
         app: {
-          bg: '#F1F5F9',
-          surface: '#FFFFFF',
-          border: '#E2E8F0',
-          muted: '#94A3B8',
-          text: '#1E293B',
+          bg: 'rgb(var(--c-app-bg) / <alpha-value>)',
+          surface: 'rgb(var(--c-app-surface) / <alpha-value>)',
+          border: 'rgb(var(--c-app-border) / <alpha-value>)',
+          muted: 'rgb(var(--c-app-muted) / <alpha-value>)',
+          text: 'rgb(var(--c-app-text) / <alpha-value>)',
         },
       },
       fontSize: {

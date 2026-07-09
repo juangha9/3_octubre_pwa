@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
 import { useTurnos, formatHorario } from '@/hooks/useTurnos'
 import { hoyLocal, formatFecha, formatHora } from '@/lib/date'
+import ThemeToggle from '@/components/ThemeToggle'
 import type { Tanque, VarillajeLectura } from '@/types'
 
 type TipoControl = 'cambio_turno' | 'control_osinergmin'
@@ -153,6 +154,7 @@ export default function VarillajePage({ base = '' }: { base?: string }) {
           ←
         </button>
         <div className="flex-1 text-base font-semibold text-app-text">Varillaje</div>
+        <ThemeToggle />
         <div className="rounded-lg border border-app-border bg-app-bg px-3 py-1 text-xs font-medium text-app-muted">
           {formatFecha(now)} · {formatHora(now)}
         </div>

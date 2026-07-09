@@ -734,6 +734,34 @@ efectivo_final =
 
 ---
 
+## 12. Flujo de desarrollo — cuándo REINICIAR el servidor vs. Ctrl+Shift+R
+
+Cuando el asistente entrega cambios, **debe indicar explícitamente** qué acción hace falta para verlos, porque no siempre basta con recargar el navegador. Regla:
+
+### Requiere REINICIAR el servidor de Vite (`Ctrl+C` y luego `npm run dev`)
+El HMR de Vite/PostCSS no siempre regenera correctamente y hay que arrancar de cero:
+- Cambios en **`tailwind.config.ts`** (colores/tokens, `darkMode`, `content`, plugins, `theme.extend`).
+- **Clases utilitarias NUEVAS** que Tailwind aún no había generado (JIT no siempre las recoge en caliente).
+- Cambios en la capa base/tema de **`index.css`**: bloques `@layer`, definición de variables CSS `:root` / `[data-theme=…]`, `@apply` nuevos.
+- Cambios en **`vite.config.ts`**, `postcss.config.*`, `.env`, `index.html`, o dependencias (`package.json` / `npm i`).
+- Nuevos **assets** del `public/` o del manifest de la PWA.
+
+### Basta con Ctrl+Shift+R (recarga forzada, sin caché)
+El HMR ya aplicó el cambio pero el navegador o el **service worker de la PWA** sirve una versión previa:
+- Cambios solo en **JSX/TSX/TS** (lógica, componentes, props) usando clases/variables que **ya existían**.
+- Ajustes de **valores** de estilos ya presentes (no clases nuevas).
+- Tras un **rebuild/redeploy** (la PWA cachea agresivamente; forzar recarga o "Update"/reabrir la app instalada actualiza el service worker).
+
+### Regla práctica
+> Si tocaste `tailwind.config.ts` o el tema/variables/`@layer` de `index.css`, o agregaste clases nuevas → **reiniciar servidor**. Si solo tocaste código o valores existentes → **Ctrl+Shift+R**. Ante la duda, reiniciar el servidor (es barato y descarta el caché de Tailwind por completo).
+
+**El asistente debe cerrar cada entrega diciendo cuál de las dos aplica.**
+
+### Nota sobre el tema oscuro (referencia)
+El tema vive en variables CSS (`:root` claro / `:root[data-theme='dark']` oscuro) consumidas por los tokens de Tailwind (`rgb(var(--c-…) / <alpha-value>)`). Al añadir componentes nuevos, usar los tokens semánticos (`bg-app-surface`, `text-app-text`, `border-app-border`, `bg-primary`, …) para que adapten solos; evitar hex inline y clases de color literal (`bg-white`, `text-slate-700`) salvo que se agregue su override en la sección dark de `index.css`. Colores dentro de SVG deben elegirse en JS con `useTheme()` (los atributos de presentación SVG no resuelven `var()`).
+
+---
+
 ## Resumen de "qué SÍ y qué NO"
 
 ✅ TypeScript + React + Vite + Supabase + Cloudflare + Tailwind

@@ -1,6 +1,7 @@
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
+import ThemeToggle from '@/components/ThemeToggle'
 import VentasPage from './ventas/VentasDelDiaPage'
 import CorporativoPage from './corporativo/CorporativoPage'
 import ComprasPage from './compras/ComprasPage'
@@ -48,12 +49,15 @@ export default function AdminLayout() {
             {item.label}
           </NavLink>
         ))}
-        <button
-          onClick={handleLogout}
-          className="btn-ghost ml-auto text-xs"
-        >
-          Salir
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <ThemeToggle />
+          <button
+            onClick={handleLogout}
+            className="btn-ghost text-xs"
+          >
+            Salir
+          </button>
+        </div>
       </header>
 
       {/* Content */}

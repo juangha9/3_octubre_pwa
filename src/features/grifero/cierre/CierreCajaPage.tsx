@@ -9,6 +9,7 @@ import { hoyLocal, formatFecha, formatHora } from '@/lib/date'
 import { COIN_DEFS, BILL_DEFS, VALE_TYPES, TipoVale } from '../constants'
 import DenomCounter from './DenomCounter'
 import ValeModal, { ValeItem } from './ValeModal'
+import ThemeToggle from '@/components/ThemeToggle'
 
 type ValesByTipo = Record<TipoVale, ValeItem[]>
 
@@ -165,6 +166,7 @@ export default function CierreCajaPage({ base = '' }: { base?: string }) {
           ←
         </button>
         <div className="flex-1 text-base font-semibold text-app-text">Cierre de Caja</div>
+        <ThemeToggle />
         <div className="rounded-lg border border-app-border bg-app-bg px-3 py-1 text-xs font-medium text-app-muted">
           {formatFecha(now)} · {formatHora(now)}
         </div>

@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-07** (fix eje del gráfico OSINERGMIN, encabezado configurable en Seguimiento, VALE LIC. + orden de columnas en Ventas)
+Última actualización: **2026-07-08** (tema oscuro global, combobox editable en Ventas, fix 400 al escribir fecha, gráfico OSINERGMIN tematizado)
 
 ## Módulos completados
 
@@ -174,6 +174,24 @@ metadata:
 
 - `npx tsc -p tsconfig.app.json --noEmit` verificado sin errores.
 
+## Cambios de esta sesión (2026-07-08)
+
+### Tema oscuro GLOBAL (claro/oscuro)
+1. **Sistema de tema por variables CSS** (`src/index.css` + `tailwind.config.ts`): los tokens de color de Tailwind (`primary`, `success`, `app.bg/surface/border/muted/text`, etc.) ahora se resuelven vía `rgb(var(--c-…) / <alpha-value>)`. Se definen dos juegos de variables en `:root` (claro) y `:root[data-theme='dark']` (oscuro, estilo Supabase: superficies slate oscuras + texto claro). Al cambiar `data-theme` en `<html>`, TODA la app se re-tematiza sola — cualquier clase `bg-primary`, `text-app-text`, `border-app-border`… adapta sin tocar componentes.
+2. **Overrides para utilidades de color fijo**: las clases Tailwind con color literal que NO pasan por tokens (`bg-white`, `bg-slate-50/100`, `text-slate-*`, `text-green-*`, `bg-blue-50`, `bg-amber-50`, etc.) se sobreescriben bajo `:root[data-theme='dark'] .clase { … }` (mayor especificidad → ganan sin `!important`). Variantes con `!important` (p. ej. `!bg-blue-50` de la fila en edición de Seguimiento) tienen su propio override con `!important`.
+3. **Celdas de color de Ventas → variables**: los ~55 colores hex inline de `VentasDelDiaPage.tsx` pasaron a variables temáticas (`--c-hl-credit`, `--c-hl-cash`, `--c-hl-warn`, `--c-pos-fg`, `--c-neg-fg`, …), con valor claro y oscuro.
+4. **`ThemeProvider` + `ThemeToggle`**: `src/lib/theme.tsx` (contexto, recuerda preferencia en `localStorage` clave `app.theme`, respeta el SO la 1ª vez) y `src/components/ThemeToggle.tsx` (botón ☀️/🌙). Toggle colocado en la barra del Admin, Home del grifero, Cierre, Varillaje y Login. `main.tsx` fija `data-theme` **antes** del primer render (sin parpadeo) y envuelve con `<ThemeProvider>`. `color-scheme` oscurece controles nativos (fechas, selects, scrollbars).
+5. **Gráfico OSINERGMIN tematizado** (`OsinergminPage` `RankingChart`): los atributos de presentación SVG (`stroke`/`fill`) **no** resuelven `var()` de CSS, así que el gráfico lee el tema con `useTheme()` y usa una paleta `CHART` clara/oscura (rejilla, ejes, etiquetas, aro de puntos). Los colores de serie (DB5/Regular/Premium) se mantienen. Este era el motivo de que OSINERGMIN "casi no cambiara" en oscuro.
+
+### Ventas (VentasDelDiaPage)
+6. **Fix 400 (Bad Request) al escribir la fecha a mano**: al teclear en `<input type="date">` el valor queda vacío/incompleto → se consultaba Supabase con `fecha=eq.` (vacío) → 400. Nuevo helper `esFechaValida()` en `lib/date.ts`; `loadDia` y `handleFixDate` ignoran la carga hasta que la fecha sea completa y real.
+7. **Comboboxes (Cliente, Producto, Turno)**: nuevo componente reutilizable `src/components/Combobox.tsx` — editable (se escribe para filtrar) pero **solo guarda un valor que coincida** con una opción; sin coincidencia al salir, revierte (no persiste texto libre). Menú `position: fixed` para no ser recortado por el `overflow` de las tablas; teclado (flechas/Enter/Escape). Turno usa opciones 1–4 (solo reconoce 1 a 4). Reemplaza los `<select>` de Cliente/Producto/Turno en la fila de alta, la edición en línea y el crédito rápido. `handleRegBlur(id, override?)` acepta el valor recién confirmado para no depender de estado stale.
+
+- `npm run build` (tsc -b + vite) verificado en verde.
+
+### ⚠️ Nota de despliegue en desarrollo (Vite)
+Cambios en **`tailwind.config.ts`** o en la definición de **variables/tema en `index.css`** (nuevas clases utilitarias, `@layer`, tokens) requieren **reiniciar el servidor de Vite** (`Ctrl+C` y `npm run dev`), NO basta `Ctrl+Shift+R`: Vite/PostCSS solo regeneran el CSS de Tailwind al arrancar o cuando cambia un archivo observado, y añadir clases nuevas puede no invalidar el caché de HMR. Cambios solo en JSX/TS/valores existentes sí refrescan con `Ctrl+Shift+R`. Ver **BUENAS_PRACTICAS.md §12**.
+
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.
 - **Fix refresh al minimizar** — `onAuthStateChange` ignora `TOKEN_REFRESHED` y `SIGNED_IN` si ya hay perfil cargado (usa `profileRef`).
@@ -236,16 +254,21 @@ src/
         EmpresasSection.tsx
         ProveedoresSection.tsx
         AppConfigSection.tsx
+  components/
+    Combobox.tsx              ← combobox editable (match-only-commit), menú fixed
+    ThemeToggle.tsx           ← botón ☀️/🌙 (usa useTheme)
+    MultiSelectDropdown.tsx   ← selección múltiple con checkboxes
   lib/
     supabase.ts
     money.ts                  — toCentimos, formatSoles, formatSolesRaw, sumCentimos
-    date.ts                   — hoyLocal, formatFecha, formatHora
+    date.ts                   — hoyLocal, formatFecha, formatHora, esFechaValida
+    theme.tsx                 ← ThemeProvider + useTheme (data-theme en <html>, localStorage)
     useHardenNumberInputs.ts  ← endurece inputs numéricos (global)
     usePersistedState.ts      ← useState + localStorage (filtros)
   types/index.ts              — interfaces TypeScript
-  index.css                   — .table-excel (36px/14px), spinners off, .btn-*, .input, .card, .modal-*, .badge-*
+  index.css                   — variables de tema claro/oscuro (:root / [data-theme=dark]), overrides dark de utilidades, .table-excel (36px/14px), spinners off, .btn-*, .input, .card, .modal-*, .badge-*
   App.tsx                     — guards de auth + rutas por rol + useHardenNumberInputs()
-  main.tsx                    — <AuthProvider> → <QueryClientProvider> → <App>
+  main.tsx                    — aplica data-theme temprano + <ThemeProvider> → <AuthProvider> → <QueryClientProvider> → <App>
   features/admin/
     osinergmin/
       OsinergminPage.tsx        ← ranking /osinergmin (Realtime + auto-refresco); botón manual invoca osinergmin-cron

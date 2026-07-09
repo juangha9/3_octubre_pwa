@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
+import ThemeToggle from '@/components/ThemeToggle'
 
 export default function HomePage({ base = '' }: { base?: string }) {
   const navigate = useNavigate()
@@ -22,7 +23,8 @@ export default function HomePage({ base = '' }: { base?: string }) {
   const hora = now.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-app-bg px-6 py-12">
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-app-bg px-6 py-12">
+      <ThemeToggle className="absolute right-4 top-4" />
       <div className="mb-10 text-center">
         <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center rounded-3xl bg-primary text-4xl shadow-sm">
           ⛽

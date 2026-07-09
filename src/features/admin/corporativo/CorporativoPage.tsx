@@ -98,7 +98,7 @@ const FORM_INIT: FormState = {
 type ColKey =
   | 'fecha' | 'empresa' | 'tipo' | 'vale' | 'ticket' | 'placa' | 'conductor'
   | 'dni' | 'turno' | 'producto' | 'galones' | 'precio' | 'importe'
-  | 'factura' | 'estado'
+  | 'factura' | 'estado' | 'acciones'
 
 interface ColDef { key: ColKey; label: string; width: number }
 
@@ -118,14 +118,15 @@ const COLUMNAS: ColDef[] = [
   { key: 'importe',   label: 'IMPORTE',   width: 96 },
   { key: 'factura',   label: 'FACTURA',   width: 96 },
   { key: 'estado',    label: 'ESTADO',    width: 86 },
+  // Columna de botones (Editar / Eliminar / Historial). Configurable como las
+  // demás desde "Editar encabezado" (mostrar/ocultar + reordenar).
+  { key: 'acciones',  label: 'ACCIONES',  width: 160 },
 ]
 const COL_DEF = Object.fromEntries(COLUMNAS.map(c => [c.key, c])) as Record<ColKey, ColDef>
 // Alineación de las columnas numéricas (misma en cabecera, cuerpo y totales).
 const COL_ALIGN: Partial<Record<ColKey, string>> = {
   turno: 'text-center', galones: 'text-right', precio: 'text-right', importe: 'text-right',
 }
-// Ancho de la columna de acciones (fija, siempre al final).
-const ANCHO_ACCIONES = 160
 
 /** Preferencia por columna: orden (posición en el array) + visibilidad. */
 type ColPref = { k: ColKey; on: boolean }
@@ -638,7 +639,7 @@ export default function CorporativoPage() {
 
   const cols = useMemo(() => prefs.filter(p => p.on).map(p => p.k), [prefs])
   const anchoTabla = useMemo(
-    () => cols.reduce((t, k) => t + COL_DEF[k].width, 0) + ANCHO_ACCIONES,
+    () => cols.reduce((t, k) => t + COL_DEF[k].width, 0),
     [cols],
   )
 
@@ -768,6 +769,21 @@ export default function CorporativoPage() {
             <option value="pagado">Pagado</option>
           </select>
         )
+      case 'acciones':
+        return (
+          <div className="flex gap-1">
+            <button
+              className="btn-primary px-2 py-0.5 text-xs"
+              onClick={handleSave}
+              disabled={saving || !canSave}
+            >
+              {saving ? '…' : 'Guardar'}
+            </button>
+            <button className="btn-ghost px-1.5 py-0.5 text-xs" onClick={cancelEdit}>
+              Cancelar
+            </button>
+          </div>
+        )
     }
   }
 
@@ -809,6 +825,35 @@ export default function CorporativoPage() {
           {row.estado_pago === 'pagado' ? 'Pagado' : 'Pendiente'}
         </button>
       )
+      case 'acciones': return (
+        <div className="flex items-center gap-1">
+          {/* Historial: botón propio (ya NO es clic en toda la fila) */}
+          <button
+            className="btn-ghost px-1 text-xs"
+            onClick={() => abrirHistorial(row)}
+            title="Ver historial de cambios"
+          >
+            <IconHistorial />
+          </button>
+          {vista === 'papelera' ? (
+            <button className="btn-ghost text-xs text-success-text" onClick={() => restaurar(row.id)}>
+              ↩ Restaurar
+            </button>
+          ) : (
+            <>
+              <button className="btn-ghost text-xs" onClick={() => openEdit(row)}>
+                Editar
+              </button>
+              <button
+                className="btn-ghost text-xs text-danger-text"
+                onClick={() => setDeleteId(row.id)}
+              >
+                ✕
+              </button>
+            </>
+          )}
+        </div>
+      )
     }
   }
 
@@ -829,6 +874,7 @@ export default function CorporativoPage() {
     importe: 'text-right font-mono text-xs font-medium',
     factura: 'font-mono text-xs',
     estado: '',
+    acciones: '',
   }
 
   /**
@@ -852,7 +898,6 @@ export default function CorporativoPage() {
             {valores[k] ?? null}
           </td>
         ))}
-        <td />
       </tr>
     )
   }
@@ -1045,7 +1090,6 @@ export default function CorporativoPage() {
                     {COL_DEF[k].label}
                   </th>
                 ))}
-                <th style={{ width: ANCHO_ACCIONES }} />
               </tr>
             </thead>
             <tbody>
@@ -1060,29 +1104,15 @@ export default function CorporativoPage() {
                   // `importe` se calcula, así que nunca es editable.
                   const ocultosEditables = COLUMNAS
                     .map(c => c.key)
-                    .filter(k => k !== 'importe' && !cols.includes(k))
+                    .filter(k => k !== 'importe' && k !== 'acciones' && !cols.includes(k))
                   return (
                     <Fragment key={row.id}>
                       <tr className="!bg-blue-50">
                         {cols.map(k => <td key={k}>{controlEdicion(k)}</td>)}
-                        <td>
-                          <div className="flex gap-1">
-                            <button
-                              className="btn-primary px-2 py-0.5 text-xs"
-                              onClick={handleSave}
-                              disabled={saving || !canSave}
-                            >
-                              {saving ? '…' : 'Guardar'}
-                            </button>
-                            <button className="btn-ghost px-1.5 py-0.5 text-xs" onClick={cancelEdit}>
-                              Cancelar
-                            </button>
-                          </div>
-                        </td>
                       </tr>
                       {/* Campos secundarios de la misma edición (sin modal) */}
                       <tr className="!bg-blue-50">
-                        <td colSpan={cols.length + 1} className="!whitespace-normal">
+                        <td colSpan={cols.length} className="!whitespace-normal">
                           <div className="flex flex-wrap items-end gap-3 px-1 py-1">
                             {ocultosEditables.map(k => (
                               <label key={k} className="flex items-center gap-1 text-[11px] text-app-muted">
@@ -1139,42 +1169,13 @@ export default function CorporativoPage() {
                     {cols.map(k => (
                       <td key={k} className={CLASE_VISTA[k]}>{contenidoVista(k, row)}</td>
                     ))}
-                    <td>
-                      <div className="flex items-center gap-1">
-                        {/* Historial: botón propio (ya NO es clic en toda la fila) */}
-                        <button
-                          className="btn-ghost px-1 text-xs"
-                          onClick={() => abrirHistorial(row)}
-                          title="Ver historial de cambios"
-                        >
-                          <IconHistorial />
-                        </button>
-                        {vista === 'papelera' ? (
-                          <button className="btn-ghost text-xs text-success-text" onClick={() => restaurar(row.id)}>
-                            ↩ Restaurar
-                          </button>
-                        ) : (
-                          <>
-                            <button className="btn-ghost text-xs" onClick={() => openEdit(row)}>
-                              Editar
-                            </button>
-                            <button
-                              className="btn-ghost text-xs text-danger-text"
-                              onClick={() => setDeleteId(row.id)}
-                            >
-                              ✕
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
                   </tr>
                 )
               })}
 
               {rowsFiltradas.length === 0 && (
                 <tr>
-                  <td colSpan={cols.length + 1} className="py-10 text-center text-sm text-app-muted">
+                  <td colSpan={cols.length} className="py-10 text-center text-sm text-app-muted">
                     {vista === 'papelera'
                       ? 'La papelera está vacía para el periodo y filtros seleccionados'
                       : 'Sin registros para los filtros seleccionados'}
@@ -1528,16 +1529,26 @@ export default function CorporativoPage() {
                         </span>
                       </div>
 
-                      {l.accion === 'INSERT' && l.datos_new && (
-                        <p className="mt-1.5 text-xs text-app-muted">
-                          Creado con {fmtCampoLog('cantidad_galones', l.datos_new['cantidad_galones'])} gal
-                          de {fmtCampoLog('tipo_combustible', l.datos_new['tipo_combustible'])} por{' '}
-                          {fmtCampoLog('importe_centimos', l.datos_new['importe_centimos'])}
-                          {l.datos_new['empresa_id'] != null && (
-                            <> · {fmtCampoLog('empresa_id', l.datos_new['empresa_id'])}</>
-                          )}
-                        </p>
-                      )}
+                      {l.accion === 'INSERT' && l.datos_new && (() => {
+                        const dn = l.datos_new
+                        // Mostrar TODOS los campos con los que se creó la fila
+                        // (no solo un resumen): conductor, DNI, placa, ticket, etc.
+                        const filas = CAMPOS_LOG
+                          .map(([key, label]) => ({ key, label, valor: dn[key] }))
+                          .filter(f => f.valor != null && f.valor !== '')
+                        return (
+                          <table className="mt-1.5 w-full text-xs">
+                            <tbody>
+                              {filas.map(f => (
+                                <tr key={f.key}>
+                                  <td className="w-40 py-0.5 pr-2 font-medium text-app-muted">{f.label}</td>
+                                  <td className="py-0.5 font-mono text-app-text">{fmtCampoLog(f.key, f.valor)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )
+                      })()}
 
                       {l.accion === 'UPDATE' && (
                         difs.length === 0 ? (

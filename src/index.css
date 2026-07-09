@@ -2,19 +2,113 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─────────────────────────────────────────────────────────────────────
+   TEMA (claro / oscuro)
+   Los tokens de color se exponen como variables CSS y se consumen desde
+   tailwind.config (`rgb(var(--c-…) / <alpha-value>)`). Cambiar `data-theme`
+   en <html> reescribe estas variables y toda la app se re-tematiza sola.
+   Los tonos oscuros usan texto claro (estilo Supabase) para buena lectura.
+   ───────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* Tokens semánticos (tripletas RGB para soportar opacidad de Tailwind) */
+  --c-primary: 186 214 245;
+  --c-primary-dark: 145 190 233;
+  --c-primary-text: 30 58 95;
+  --c-success: 187 247 208;
+  --c-success-dark: 134 239 172;
+  --c-success-text: 20 83 45;
+  --c-warning: 253 230 138;
+  --c-warning-dark: 252 211 77;
+  --c-warning-text: 120 53 15;
+  --c-danger: 254 202 202;
+  --c-danger-dark: 252 165 165;
+  --c-danger-text: 127 29 29;
+  --c-accent: 254 215 170;
+  --c-accent-dark: 253 186 116;
+  --c-accent-text: 124 45 18;
+  --c-app-bg: 241 245 249;
+  --c-app-surface: 255 255 255;
+  --c-app-border: 226 232 240;
+  --c-app-muted: 148 163 184;
+  --c-app-text: 30 41 59;
+
+  /* Filas de tabla estilo Excel */
+  --row-alt: #f8fafc;
+  --row-hover: #eff6ff;
+
+  /* Celdas resaltadas (usadas vía inline style en Ventas) */
+  --c-hl-credit: #fef9c3;   --c-hl-credit-fg: #854d0e;
+  --c-hl-neutral: #f1f5f9;  --c-hl-neutral2: #e2e8f0;
+  --c-hl-cash: #dcfce7;     --c-hl-cash2: #bbf7d0;
+  --c-hl-cash-soft: #f0fdf4; --c-hl-cash-fg: #15803d;
+  --c-hl-warn: #fff7ed;     --c-hl-warn-fg: #ea580c;
+  --c-hl-info: #eff6ff;
+  --c-hl-accent: #ffedd5;   --c-hl-accent2: #fed7aa; --c-hl-accent-fg: #c2410c;
+  --c-pos-fg: #16a34a;      --c-neg-fg: #dc2626;
+
+  /* Scrollbar */
+  --sb-track: #f1f5f9;
+  --sb-thumb: #cbd5e1;
+  --sb-thumb-hover: #94a3b8;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --c-primary: 37 78 128;
+  --c-primary-dark: 59 108 168;
+  --c-primary-text: 191 219 254;
+  --c-success: 22 101 52;
+  --c-success-dark: 21 128 61;
+  --c-success-text: 187 247 208;
+  --c-warning: 133 77 14;
+  --c-warning-dark: 161 98 7;
+  --c-warning-text: 253 230 138;
+  --c-danger: 153 27 27;
+  --c-danger-dark: 185 28 28;
+  --c-danger-text: 254 202 202;
+  --c-accent: 154 52 18;
+  --c-accent-dark: 194 65 12;
+  --c-accent-text: 254 215 170;
+  --c-app-bg: 15 23 42;
+  --c-app-surface: 30 41 59;
+  --c-app-border: 51 65 85;
+  --c-app-muted: 148 163 184;
+  --c-app-text: 226 232 240;
+
+  --row-alt: #243044;
+  --row-hover: #2d3d57;
+
+  --c-hl-credit: #3b3410;   --c-hl-credit-fg: #fde68a;
+  --c-hl-neutral: #2a3854;  --c-hl-neutral2: #34435c;
+  --c-hl-cash: #14392a;     --c-hl-cash2: #195b3a;
+  --c-hl-cash-soft: #12312a; --c-hl-cash-fg: #86efac;
+  --c-hl-warn: #3a2610;     --c-hl-warn-fg: #fdba74;
+  --c-hl-info: #17273f;
+  --c-hl-accent: #3d2c12;   --c-hl-accent2: #4d3618; --c-hl-accent-fg: #fdba74;
+  --c-pos-fg: #4ade80;      --c-neg-fg: #f87171;
+
+  --sb-track: #0f172a;
+  --sb-thumb: #475569;
+  --sb-thumb-hover: #64748b;
+}
+
 @layer base {
   html {
     font-family: 'Roboto', sans-serif;
-    background-color: #F1F5F9;
-    color: #1E293B;
+    background-color: rgb(var(--c-app-bg));
+    color: rgb(var(--c-app-text));
     -webkit-font-smoothing: antialiased;
+    transition: background-color 200ms ease, color 200ms ease;
   }
 
   /* Scrollbar compacto */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: #F1F5F9; }
-  ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
+  ::-webkit-scrollbar-track { background: var(--sb-track); }
+  ::-webkit-scrollbar-thumb { background: var(--sb-thumb); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--sb-thumb-hover); }
 
   /* Inputs numéricos: sin flechas (spinners) en toda la app. El bloqueo de
      teclas (e / + - * /) y del scroll del ratón se hace en useHardenNumberInputs. */
@@ -39,23 +133,21 @@
            whitespace-nowrap select-none;
     height: 2.25rem;       /* 36px header */
     font-size: 0.8125rem;  /* 13px */
-    /* Encabezado inmóvil: se queda pegado arriba al hacer scroll vertical.
-       Con border-collapse los bordes del thead se pierden al fijarse, por eso
-       se refuerzan con box-shadow (arriba y abajo) para conservar la línea. */
+    /* Encabezado inmóvil: se queda pegado arriba al hacer scroll vertical. */
     position: sticky;
     top: 0;
     z-index: 10;
-    box-shadow: inset 0 1px 0 #E2E8F0, inset 0 -1px 0 #E2E8F0;
+    box-shadow: inset 0 1px 0 rgb(var(--c-app-border)), inset 0 -1px 0 rgb(var(--c-app-border));
   }
   .table-excel tbody tr {
     @apply transition-colors duration-200 ease-in-out;
     height: 2.25rem; /* 36px row */
   }
-  .table-excel tbody tr:hover {
-    @apply bg-blue-50;
-  }
   .table-excel tbody tr:nth-child(even) {
-    @apply bg-slate-50;
+    background-color: var(--row-alt);
+  }
+  .table-excel tbody tr:hover {
+    background-color: var(--row-hover);
   }
   .table-excel tbody td {
     @apply px-3 py-1 border border-app-border whitespace-nowrap;
@@ -81,7 +173,7 @@
 
   /* ── Inputs ── */
   .input {
-    @apply w-full rounded border border-app-border bg-white px-2 py-1 text-sm text-app-text
+    @apply w-full rounded border border-app-border bg-app-surface px-2 py-1 text-sm text-app-text
            placeholder:text-app-muted
            focus:outline-none focus:ring-2 focus:ring-primary-dark focus:border-primary-dark
            transition-all duration-200 ease-in-out;
@@ -92,7 +184,7 @@
 
   /* ── Card / Panel ── */
   .card {
-    @apply bg-white rounded-lg border border-app-border shadow-sm p-4
+    @apply bg-app-surface rounded-lg border border-app-border shadow-sm p-4
            transition-all duration-200 ease-in-out;
   }
 
@@ -102,7 +194,7 @@
            backdrop-blur-sm transition-all duration-200 ease-in-out;
   }
   .modal-box {
-    @apply bg-white rounded-lg shadow-xl border border-app-border w-full max-w-lg mx-4
+    @apply bg-app-surface rounded-lg shadow-xl border border-app-border w-full max-w-lg mx-4
            transition-all duration-200 ease-in-out;
   }
 
@@ -116,3 +208,46 @@
   .badge-primary { @apply badge bg-primary text-primary-text; }
   .badge-accent  { @apply badge bg-accent text-accent-text; }
 }
+
+/* ─────────────────────────────────────────────────────────────────────
+   OVERRIDES MODO OSCURO para utilidades Tailwind con color fijo
+   (bg-white, slate-*, etc.) que no pasan por los tokens. Mayor
+   especificidad ([data-theme] + clase) → ganan sin `!important`.
+   ───────────────────────────────────────────────────────────────────── */
+/* Superficies */
+:root[data-theme='dark'] .bg-white { background-color: #1e293b; }
+:root[data-theme='dark'] .bg-slate-50 { background-color: #1b2740; }
+:root[data-theme='dark'] .bg-slate-100 { background-color: #24324a; }
+:root[data-theme='dark'] .bg-blue-50 { background-color: #17273f; }
+:root[data-theme='dark'] .bg-amber-50,
+:root[data-theme='dark'] .bg-amber-50\/60 { background-color: #3a2610; }
+:root[data-theme='dark'] .bg-red-50 { background-color: #3a1616; }
+:root[data-theme='dark'] .bg-red-100 { background-color: #4a1c1c; }
+:root[data-theme='dark'] .bg-green-50 { background-color: #12312a; }
+:root[data-theme='dark'] .bg-green-100 { background-color: #14392a; }
+:root[data-theme='dark'] .focus\:bg-white:focus { background-color: #24324a; }
+/* Variantes con !important (p. ej. fila en edición de Seguimiento) */
+:root[data-theme='dark'] .\!bg-blue-50 { background-color: #17273f !important; }
+:root[data-theme='dark'] .\!bg-slate-100 { background-color: #24324a !important; }
+
+/* Texto */
+:root[data-theme='dark'] .text-slate-800,
+:root[data-theme='dark'] .text-slate-700,
+:root[data-theme='dark'] .text-slate-900 { color: #e2e8f0; }
+:root[data-theme='dark'] .text-slate-600 { color: #cbd5e1; }
+:root[data-theme='dark'] .text-slate-500 { color: #b0bccd; }
+:root[data-theme='dark'] .text-slate-400 { color: #94a3b8; }
+:root[data-theme='dark'] .text-slate-300 { color: #7c899c; }
+:root[data-theme='dark'] .text-amber-800 { color: #fcd34d; }
+:root[data-theme='dark'] .text-amber-600 { color: #fbbf24; }
+:root[data-theme='dark'] .text-green-950,
+:root[data-theme='dark'] .text-green-800,
+:root[data-theme='dark'] .text-green-700 { color: #86efac; }
+:root[data-theme='dark'] .text-green-600 { color: #4ade80; }
+:root[data-theme='dark'] .text-red-800 { color: #fca5a5; }
+:root[data-theme='dark'] .text-red-600 { color: #f87171; }
+
+/* Bordes */
+:root[data-theme='dark'] .border-slate-200,
+:root[data-theme='dark'] .border-slate-300 { border-color: #334155; }
+:root[data-theme='dark'] .border-amber-300 { border-color: #92400e; }

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import ThemeToggle from '@/components/ThemeToggle'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -18,6 +19,7 @@ export default function LoginPage() {
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-app-bg">
+      <ThemeToggle className="absolute right-4 top-4" />
       <div className="card w-full max-w-xs">
         <h1 className="mb-6 text-center text-lg font-semibold text-primary-text">
           Sistema Grifo

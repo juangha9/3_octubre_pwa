@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
-import { hoyLocal } from '@/lib/date'
+import { hoyLocal, esFechaValida } from '@/lib/date'
 import { formatSoles, toCentimos, sumCentimos } from '@/lib/money'
+import Combobox from '@/components/Combobox'
 import type { Turno, EmpresaCliente, TipoCombustible } from '@/types'
 
 // ─── Tipos Locales ────────────────────────────────────────────────
@@ -220,6 +221,13 @@ export default function VentasPage() {
 
   // ── Carga de datos del día (Registro Diario) ──────────────────
   const loadDia = useCallback(async (silent = false) => {
+    // Al escribir la fecha a mano queda incompleta hasta terminar; consultar
+    // con una fecha vacía/parcial provoca 400 (Bad Request). Se ignora hasta
+    // que sea una fecha real y completa.
+    if (!esFechaValida(fecha)) {
+      setLoadingDia(false)
+      return
+    }
     if (!silent) setLoadingDia(true)
     try {
       const [cierresRes, preciosRes, regRes] = await Promise.all([
@@ -302,7 +310,7 @@ export default function VentasPage() {
   // Solo permitido si el destino no tiene absolutamente ningún dato
   // (evita fusiones o sobrescrituras silenciosas de información real).
   async function handleFixDate() {
-    if (!fixDateTarget || fixDateTarget === fecha) return
+    if (!esFechaValida(fixDateTarget) || fixDateTarget === fecha) return
     setFixingDate(true)
     try {
       const [regCheck, cierreCheck, precioCheck] = await Promise.all([
@@ -614,6 +622,9 @@ export default function VentasPage() {
       })
       if (error) throw error
 
+      // Se conservan TURNO y PRODUCTO (y el tipo de atención) del registro
+      // anterior a propósito: acelera el registro rápido de varios vales
+      // seguidos del mismo turno/combustible. El resto se limpia.
       setNuevo(p => ({
         ...NUEVO_VACIO,
         turno_id: p.turno_id,
@@ -621,6 +632,9 @@ export default function VentasPage() {
         tipo_combustible: p.tipo_combustible,
       }))
       loadDia(true) // Refresco silencioso
+      // Devolver el foco al inicio de la fila (CLIENTE) para empezar el
+      // siguiente registro sin usar el ratón.
+      setTimeout(() => document.getElementById('venta-nuevo-cliente')?.focus(), 0)
     } catch (err) {
       alert('Error al agregar el registro de venta: ' + (err as any).message)
     } finally {
@@ -686,9 +700,12 @@ export default function VentasPage() {
   }
 
   // ── Guardar en línea una fila de venta (Completo) — sin botón "Editar" ──
-  const handleRegBlur = async (id: string) => {
-    const inputs = regInputsMap[id]
-    if (!inputs) return
+  const handleRegBlur = async (id: string, override?: Partial<RegistroInputs>) => {
+    const base = regInputsMap[id]
+    if (!base) return
+    // `override` permite que un Combobox pase su valor recién confirmado sin
+    // depender del estado (que aún podría estar desactualizado en este tick).
+    const inputs = override ? { ...base, ...override } : base
     const galones = parseFloat(inputs.cantidad_galones) || 0
     let precioUnit = precioDiario(inputs.tipo_combustible)
 
@@ -757,6 +774,37 @@ export default function VentasPage() {
     }
     return map
   }, [registros, turnos])
+
+  // ── Opciones para los comboboxes (Cliente, Producto, Turno) ───
+  // Sólo se guarda un valor que coincida con estas opciones; texto libre sin
+  // coincidencia no se persiste (lo maneja el propio Combobox).
+  const empresaOptions = useMemo(
+    () => empresas.map(e => ({ value: e.id, label: e.nombre })),
+    [empresas]
+  )
+  // Turno: la etiqueta es la posición (1..4), así el usuario escribe 1-4.
+  const turnoOptions = useMemo(
+    () => turnos.map((t, i) => ({ value: String(t.id), label: String(i + 1) })),
+    [turnos]
+  )
+
+  // ── Selección por tecla en los <select> de Producto y Turno ───
+  // El typeahead nativo del <select> ACUMULA las teclas en un búfer (~1s):
+  // pulsar R, P, D seguidas arma "RPD" y no coincide con nada; solo se resetea
+  // al salir de la celda. Estos helpers seleccionan al instante con cada tecla,
+  // de forma repetible y sin abandonar la celda.
+  const combustibleCodigoPorTecla = useCallback((key: string): string | null => {
+    const k = key.toUpperCase()
+    if (k.length !== 1) return null
+    const m = combustibles.find(c => c.codigo.toUpperCase().startsWith(k))
+    return m ? m.codigo : null
+  }, [combustibles])
+
+  const turnoIdPorTecla = useCallback((key: string): string | null => {
+    const n = Number(key)
+    if (!Number.isInteger(n) || n < 1 || n > turnos.length) return null
+    return String(turnos[n - 1].id)
+  }, [turnos])
 
   // Filtrar registros rápidos (cantidad_galones === 0) para el modo Abreviado
   const registrosRapidos = useMemo(() => {
@@ -993,18 +1041,18 @@ export default function VentasPage() {
                         <th style={{ width: 100 }}>DEPÓSITO / TRANS.</th>
                         <th style={{ width: 100 }}>DSCTOS VALES</th>
                         {modo === 'abreviado' ? (
-                          <th style={{ width: 120, background: '#fef9c3', color: '#854d0e' }}>TOTAL CRÉDITOS</th>
+                          <th style={{ width: 120, background: 'var(--c-hl-credit)', color: 'var(--c-hl-credit-fg)' }}>TOTAL CRÉDITOS</th>
                         ) : (
                           <>
-                            <th style={{ width: 108, background: '#f1f5f9' }}>CORPORACIÓN</th>
-                            <th style={{ width: 110, background: '#f1f5f9' }}>LICITACIONES</th>
-                            <th style={{ width: 108, background: '#f1f5f9' }}>PARTICULARES</th>
-                            <th style={{ width: 90,  background: '#f1f5f9' }}>CHEVRON</th>
+                            <th style={{ width: 108, background: 'var(--c-hl-neutral)' }}>CORPORACIÓN</th>
+                            <th style={{ width: 110, background: 'var(--c-hl-neutral)' }}>LICITACIONES</th>
+                            <th style={{ width: 108, background: 'var(--c-hl-neutral)' }}>PARTICULARES</th>
+                            <th style={{ width: 90,  background: 'var(--c-hl-neutral)' }}>CHEVRON</th>
                           </>
                         )}
                         <th style={{ width: 90 }}>PRUEBA</th>
                         <th style={{ width: 90 }}>REDONDEO</th>
-                        <th style={{ width: 116, background: '#dcfce7', color: '#15803d' }}>EFECTIVO FINAL</th>
+                        <th style={{ width: 116, background: 'var(--c-hl-cash)', color: 'var(--c-hl-cash-fg)' }}>EFECTIVO FINAL</th>
                         <th style={{ width: 120 }}>COLABORADOR</th>
                       </tr>
                     </thead>
@@ -1119,22 +1167,22 @@ export default function VentasPage() {
                             {modo === 'abreviado' ? (
                               <td
                                 className="text-right font-mono text-xs font-semibold text-amber-800"
-                                style={{ background: '#fef9c3' }}
+                                style={{ background: 'var(--c-hl-credit)' }}
                               >
                                 {fs(totalCreditos)}
                               </td>
                             ) : (
                               <>
-                                <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>
                                   {fs(creditos.corporacion)}
                                 </td>
-                                <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>
                                   {fs(creditos.licitaciones)}
                                 </td>
-                                <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>
                                   {fs(creditos.particulares)}
                                 </td>
-                                <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>
                                   {fs(creditos.chevron)}
                                 </td>
                               </>
@@ -1165,7 +1213,7 @@ export default function VentasPage() {
                               />
                             </td>
                             {/* Efectivo Final */}
-                            <td className="text-right font-mono text-xs font-semibold" style={{ background: '#e8f5e9' }}>
+                            <td className="text-right font-mono text-xs font-semibold" style={{ background: 'var(--c-hl-cash-soft)' }}>
                               {fs(efectivo)}
                             </td>
                             {/* Colaborador */}
@@ -1241,16 +1289,15 @@ export default function VentasPage() {
                       
                       <div className="flex items-center gap-4">
                         <div className="flex-1">
-                          <label className="block text-xs font-semibold text-slate-500 mb-1">TURNO</label>
-                          <select
+                          <label className="block text-xs font-semibold text-slate-500 mb-1">TURNO (1-4)</label>
+                          <Combobox
                             className="input h-9"
+                            options={turnoOptions}
                             value={quickTurno}
-                            onChange={e => setQuickTurno(e.target.value)}
-                          >
-                            {turnos.map((t, i) => (
-                              <option key={t.id} value={String(t.id)}>{i + 1}</option>
-                            ))}
-                          </select>
+                            onChange={setQuickTurno}
+                            allowEmpty={false}
+                            placeholder="1-4"
+                          />
                         </div>
                         <div className="flex-1">
                           <label className="block text-xs font-semibold text-slate-500 mb-1">MONTO S/.</label>
@@ -1345,7 +1392,7 @@ export default function VentasPage() {
                           <th style={{ width: 82 }}>PRODUCTO</th>
                           <th style={{ width: 80 }}>GALONES</th>
                           <th style={{ width: 108 }}>PRECIO TOTAL</th>
-                          <th style={{ width: 100, background: '#fff7ed', color: '#ea580c' }}>
+                          <th style={{ width: 100, background: 'var(--c-hl-warn)', color: 'var(--c-hl-warn-fg)' }}>
                             VARIACIÓN
                           </th>
                           <th style={{ width: 110 }}>ACCIONES</th>
@@ -1353,26 +1400,24 @@ export default function VentasPage() {
                       </thead>
                       <tbody>
                         {/* Fila de Entrada Rápida */}
-                        <tr style={{ background: '#eff6ff' }}>
+                        <tr style={{ background: 'var(--c-hl-info)' }}>
                           <td className="text-xs text-app-muted">{fecha}</td>
                           <td>
-                            <select
+                            <Combobox
+                              id="venta-nuevo-cliente"
                               className="input py-0 h-6 text-xs w-full"
+                              options={empresaOptions}
                               value={nuevo.empresa_id}
-                              onChange={(e) => {
-                                const next = { ...nuevo, empresa_id: e.target.value }
-                                if (e.target.value) {
-                                  const emp = empresas.find(x => x.id === e.target.value)
+                              onChange={(val) => {
+                                const next = { ...nuevo, empresa_id: val }
+                                if (val) {
+                                  const emp = empresas.find(x => x.id === val)
                                   if (emp) next.tipo_atencion = emp.tipo
                                 }
                                 setNuevo(next)
                               }}
-                            >
-                              <option value="">Buscar…</option>
-                              {empresas.map(e => (
-                                <option key={e.id} value={e.id}>{e.nombre}</option>
-                              ))}
-                            </select>
+                              placeholder="Cliente…"
+                            />
                           </td>
                           <td>
                             <input
@@ -1421,6 +1466,10 @@ export default function VentasPage() {
                               className="input py-0 h-6 text-xs w-full"
                               value={nuevo.turno_id}
                               onChange={e => setNuevo({ ...nuevo, turno_id: e.target.value })}
+                              onKeyDown={e => {
+                                const id = turnoIdPorTecla(e.key)
+                                if (id) { e.preventDefault(); setNuevo(p => ({ ...p, turno_id: id })) }
+                              }}
                             >
                               {turnos.map((t, i) => (
                                 <option key={t.id} value={String(t.id)}>{i + 1}</option>
@@ -1432,6 +1481,10 @@ export default function VentasPage() {
                               className="input py-0 h-6 text-xs w-full"
                               value={nuevo.tipo_combustible}
                               onChange={e => setNuevo({ ...nuevo, tipo_combustible: e.target.value })}
+                              onKeyDown={e => {
+                                const code = combustibleCodigoPorTecla(e.key)
+                                if (code) { e.preventDefault(); setNuevo(p => ({ ...p, tipo_combustible: code })) }
+                              }}
                             >
                               <option value="">—</option>
                               {combustibles.map(c => (
@@ -1461,7 +1514,8 @@ export default function VentasPage() {
                               ? fs(Math.round(parseFloat(nuevo.cantidad_galones) * precioDiario(nuevo.tipo_combustible)))
                               : '—'}
                           </td>
-                          <td style={{ background: '#fff7ed' }}>
+                          <td className="text-center" style={{ background: 'var(--c-hl-warn)' }}>—</td>
+                          <td>
                             <button
                               className="btn-primary h-6 w-full py-0 text-xs"
                               disabled={!nuevo.tipo_combustible || !(parseFloat(nuevo.cantidad_galones) > 0) || savingReg}
@@ -1470,7 +1524,6 @@ export default function VentasPage() {
                               {savingReg ? '…' : '+ Agregar'}
                             </button>
                           </td>
-                          <td className="text-center">—</td>
                         </tr>
 
                         {/* Registros guardados — editables en línea, sin botón "Editar" */}
@@ -1488,17 +1541,14 @@ export default function VentasPage() {
                               <td className="text-xs text-app-muted">{fecha}</td>
                               {/* Cliente */}
                               <td>
-                                <select
+                                <Combobox
                                   className={cellStyle}
+                                  options={empresaOptions}
                                   value={inputs.empresa_id}
-                                  onChange={e => handleRegInputChange(r.id, 'empresa_id', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                >
-                                  <option value="">Buscar…</option>
-                                  {empresas.map(emp => (
-                                    <option key={emp.id} value={emp.id}>{emp.nombre}</option>
-                                  ))}
-                                </select>
+                                  onChange={val => handleRegInputChange(r.id, 'empresa_id', val)}
+                                  onCommit={val => handleRegBlur(r.id, { empresa_id: val })}
+                                  placeholder="Cliente…"
+                                />
                               </td>
                               {/* Vale Lic. / Número */}
                               <td>
@@ -1553,6 +1603,10 @@ export default function VentasPage() {
                                   className={cellStyle}
                                   value={inputs.turno_id}
                                   onChange={e => handleRegInputChange(r.id, 'turno_id', e.target.value)}
+                                  onKeyDown={e => {
+                                    const id = turnoIdPorTecla(e.key)
+                                    if (id) { e.preventDefault(); handleRegInputChange(r.id, 'turno_id', id) }
+                                  }}
                                   onBlur={() => handleRegBlur(r.id)}
                                 >
                                   {turnos.map((t, i) => (
@@ -1566,6 +1620,10 @@ export default function VentasPage() {
                                   className={cellStyle}
                                   value={inputs.tipo_combustible}
                                   onChange={e => handleRegInputChange(r.id, 'tipo_combustible', e.target.value)}
+                                  onKeyDown={e => {
+                                    const code = combustibleCodigoPorTecla(e.key)
+                                    if (code) { e.preventDefault(); handleRegInputChange(r.id, 'tipo_combustible', code) }
+                                  }}
                                   onBlur={() => handleRegBlur(r.id)}
                                 >
                                   {r.cantidad_galones === 0 && <option value="">—</option>}
@@ -1618,8 +1676,8 @@ export default function VentasPage() {
                               <td
                                 className="text-right font-mono text-xs font-semibold"
                                 style={{
-                                  background: '#fff7ed',
-                                  color: variacion > 0 ? '#16a34a' : variacion < 0 ? '#dc2626' : '#ea580c',
+                                  background: 'var(--c-hl-warn)',
+                                  color: variacion > 0 ? 'var(--c-pos-fg)' : variacion < 0 ? 'var(--c-neg-fg)' : 'var(--c-hl-warn-fg)',
                                 }}
                               >
                                 {r.cantidad_galones > 0 ? fs(Math.abs(variacion)) : '—'}
@@ -1678,28 +1736,28 @@ export default function VentasPage() {
                       <th style={{ width: 110 }}>DEPÓSITO / TRANS.</th>
                       <th style={{ width: 110 }}>DSCTOS, VALES</th>
                       {modo === 'abreviado' ? (
-                        <th style={{ width: 120, background: '#fef9c3', color: '#854d0e' }}>TOTAL CRÉDITOS</th>
+                        <th style={{ width: 120, background: 'var(--c-hl-credit)', color: 'var(--c-hl-credit-fg)' }}>TOTAL CRÉDITOS</th>
                       ) : (
                         <>
-                          <th style={{ width: 110, background: '#f1f5f9' }}>CORPORACIÓN</th>
-                          <th style={{ width: 110, background: '#f1f5f9' }}>LICITACIONES</th>
-                          <th style={{ width: 110, background: '#f1f5f9' }}>PARTICULARES</th>
-                          <th style={{ width: 95,  background: '#f1f5f9' }}>CHEVRON</th>
+                          <th style={{ width: 110, background: 'var(--c-hl-neutral)' }}>CORPORACIÓN</th>
+                          <th style={{ width: 110, background: 'var(--c-hl-neutral)' }}>LICITACIONES</th>
+                          <th style={{ width: 110, background: 'var(--c-hl-neutral)' }}>PARTICULARES</th>
+                          <th style={{ width: 95,  background: 'var(--c-hl-neutral)' }}>CHEVRON</th>
                         </>
                       )}
-                      <th style={{ width: 110, background: '#ffedd5', color: '#c2410c' }}>PRUEBAS / SERAF.</th>
+                      <th style={{ width: 110, background: 'var(--c-hl-accent)', color: 'var(--c-hl-accent-fg)' }}>PRUEBAS / SERAF.</th>
                       <th style={{ width: 90 }}>REDONDEO</th>
-                      <th style={{ width: 120, background: '#dcfce7', color: '#15803d' }}>EFECTIVO</th>
-                      <th style={{ width: 130, background: '#dcfce7', color: '#15803d' }}>ENTREGADO SOBRE</th>
-                      <th style={{ width: 130, background: '#dcfce7', color: '#15803d' }}>CONTABILIZADO</th>
-                      <th style={{ width: 120, background: '#dcfce7', color: '#15803d' }}>FALTANTE/SOBRANTE</th>
+                      <th style={{ width: 120, background: 'var(--c-hl-cash)', color: 'var(--c-hl-cash-fg)' }}>EFECTIVO</th>
+                      <th style={{ width: 130, background: 'var(--c-hl-cash)', color: 'var(--c-hl-cash-fg)' }}>ENTREGADO SOBRE</th>
+                      <th style={{ width: 130, background: 'var(--c-hl-cash)', color: 'var(--c-hl-cash-fg)' }}>CONTABILIZADO</th>
+                      <th style={{ width: 120, background: 'var(--c-hl-cash)', color: 'var(--c-hl-cash-fg)' }}>FALTANTE/SOBRANTE</th>
                       <th style={{ width: 110 }}>COLABORADOR</th>
                     </tr>
                   </thead>
                   <tbody>
                     
                     {/* Fila de Gran Total Mensual */}
-                    <tr className="font-bold text-slate-800" style={{ background: '#ffedd5' }}>
+                    <tr className="font-bold text-slate-800" style={{ background: 'var(--c-hl-accent)' }}>
                       <td className="text-left font-bold text-amber-955 px-2 py-1.5" colSpan={2}>
                         {nombreMes}
                       </td>
@@ -1709,22 +1767,22 @@ export default function VentasPage() {
                       <td className="text-right font-mono text-xs">{fs(totalMensual.deposito)}</td>
                       <td className="text-right font-mono text-xs">{fs(totalMensual.vales)}</td>
                       {modo === 'abreviado' ? (
-                        <td className="text-right font-mono text-xs" style={{ background: '#fef9c3' }}>
+                        <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-credit)' }}>
                           {fs(totalMensual.corporacion + totalMensual.licitaciones + totalMensual.particulares + totalMensual.chevron)}
                         </td>
                       ) : (
                         <>
-                          <td className="text-right font-mono text-xs" style={{ background: '#e2e8f0' }}>{fs(totalMensual.corporacion)}</td>
-                          <td className="text-right font-mono text-xs" style={{ background: '#e2e8f0' }}>{fs(totalMensual.licitaciones)}</td>
-                          <td className="text-right font-mono text-xs" style={{ background: '#e2e8f0' }}>{fs(totalMensual.particulares)}</td>
-                          <td className="text-right font-mono text-xs" style={{ background: '#e2e8f0' }}>{fs(totalMensual.chevron)}</td>
+                          <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(totalMensual.corporacion)}</td>
+                          <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(totalMensual.licitaciones)}</td>
+                          <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(totalMensual.particulares)}</td>
+                          <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(totalMensual.chevron)}</td>
                         </>
                       )}
-                      <td className="text-right font-mono text-xs" style={{ background: '#fed7aa' }}>{fs(totalMensual.serafinado + totalMensual.contaminacion)}</td>
+                      <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-accent2)' }}>{fs(totalMensual.serafinado + totalMensual.contaminacion)}</td>
                       <td className="text-right font-mono text-xs">{fs(totalMensual.redondeo)}</td>
-                      <td className="text-right font-mono text-xs text-green-800" style={{ background: '#bbf7d0' }}>{fs(totalMensual.efectivo_final)}</td>
-                      <td className="text-right font-mono text-xs text-green-800" style={{ background: '#bbf7d0' }}>{fs(totalMensual.entregado_grifero)}</td>
-                      <td className="text-right font-mono text-xs text-green-800" style={{ background: '#bbf7d0' }}>{fs(totalMensual.contabilizado_admin)}</td>
+                      <td className="text-right font-mono text-xs text-green-800" style={{ background: 'var(--c-hl-cash2)' }}>{fs(totalMensual.efectivo_final)}</td>
+                      <td className="text-right font-mono text-xs text-green-800" style={{ background: 'var(--c-hl-cash2)' }}>{fs(totalMensual.entregado_grifero)}</td>
+                      <td className="text-right font-mono text-xs text-green-800" style={{ background: 'var(--c-hl-cash2)' }}>{fs(totalMensual.contabilizado_admin)}</td>
                       {renderDiferencia(totalMensual.faltante_sobrante)}
                       <td className="text-center text-xs">—</td>
                     </tr>
@@ -1814,25 +1872,25 @@ export default function VentasPage() {
                                 <td className="text-right font-mono text-xs">{fs(c.dscto_vales_centimos)}</td>
                                 
                                 {modo === 'abreviado' ? (
-                                  <td className="text-right font-mono text-xs font-medium" style={{ background: '#fef9c3' }}>
+                                  <td className="text-right font-mono text-xs font-medium" style={{ background: 'var(--c-hl-credit)' }}>
                                     {fs(totalCreditos)}
                                   </td>
                                 ) : (
                                   <>
-                                    <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>{fs(c.corporacion_centimos)}</td>
-                                    <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>{fs(c.licitaciones_centimos)}</td>
-                                    <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>{fs(c.particulares_centimos)}</td>
-                                    <td className="text-right font-mono text-xs" style={{ background: '#f1f5f9' }}>{fs(c.chevron_centimos)}</td>
+                                    <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(c.corporacion_centimos)}</td>
+                                    <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(c.licitaciones_centimos)}</td>
+                                    <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(c.particulares_centimos)}</td>
+                                    <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(c.chevron_centimos)}</td>
                                   </>
                                 )}
 
-                                <td className="text-right font-mono text-xs" style={{ background: '#fff7ed' }}>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-warn)' }}>
                                   {fs(c.serafinado_centimos + c.contaminacion_centimos)}
                                 </td>
                                 <td className="text-right font-mono text-xs">{fs(c.redondeo_centimos)}</td>
-                                <td className="text-right font-mono text-xs font-semibold" style={{ background: '#f0fdf4' }}>{fs(c.efectivo_final_centimos)}</td>
-                                <td className="text-right font-mono text-xs" style={{ background: '#f0fdf4' }}>{fs(c.entregado_grifero_centimos)}</td>
-                                <td className="text-right font-mono text-xs" style={{ background: '#f0fdf4' }}>{fs(c.contabilizado_admin_centimos)}</td>
+                                <td className="text-right font-mono text-xs font-semibold" style={{ background: 'var(--c-hl-cash-soft)' }}>{fs(c.efectivo_final_centimos)}</td>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-cash-soft)' }}>{fs(c.entregado_grifero_centimos)}</td>
+                                <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-cash-soft)' }}>{fs(c.contabilizado_admin_centimos)}</td>
                                 {renderDiferencia(c.faltante_sobrante_centimos)}
                                 <td className="text-center text-xs text-slate-600 truncate" style={{ maxWidth: 100 }}>{c.colaborador_nombre}</td>
                               </tr>
@@ -1840,7 +1898,7 @@ export default function VentasPage() {
                           })}
 
                           {/* Fila consolidada (DIA) */}
-                          <tr className="font-bold border-b-2 border-slate-300" style={{ background: '#dcfce7' }}>
+                          <tr className="font-bold border-b-2 border-slate-300" style={{ background: 'var(--c-hl-cash)' }}>
                             <td className="text-center text-xs text-green-950">
                               <button
                                 onClick={() => { setFecha(fechaString); setActiveTab('registro') }}
@@ -1858,23 +1916,23 @@ export default function VentasPage() {
                             <td className="text-right font-mono text-xs text-green-950">{fs(diaVales)}</td>
                             
                             {modo === 'abreviado' ? (
-                              <td className="text-right font-mono text-xs text-green-950" style={{ background: '#fef9c3' }}>
+                              <td className="text-right font-mono text-xs text-green-950" style={{ background: 'var(--c-hl-credit)' }}>
                                 {fs(diaCorporacion + diaLicitaciones + diaParticulares + diaChevron)}
                               </td>
                             ) : (
                               <>
-                                <td className="text-right font-mono text-xs text-green-950" style={{ background: '#e2e8f0' }}>{fs(diaCorporacion)}</td>
-                                <td className="text-right font-mono text-xs text-green-950" style={{ background: '#e2e8f0' }}>{fs(diaLicitaciones)}</td>
-                                <td className="text-right font-mono text-xs text-green-950" style={{ background: '#e2e8f0' }}>{fs(diaParticulares)}</td>
-                                <td className="text-right font-mono text-xs text-green-950" style={{ background: '#e2e8f0' }}>{fs(diaChevron)}</td>
+                                <td className="text-right font-mono text-xs text-green-950" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(diaCorporacion)}</td>
+                                <td className="text-right font-mono text-xs text-green-950" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(diaLicitaciones)}</td>
+                                <td className="text-right font-mono text-xs text-green-950" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(diaParticulares)}</td>
+                                <td className="text-right font-mono text-xs text-green-950" style={{ background: 'var(--c-hl-neutral2)' }}>{fs(diaChevron)}</td>
                               </>
                             )}
 
-                            <td className="text-right font-mono text-xs text-green-950" style={{ background: '#fed7aa' }}>{fs(diaSerafinado + diaContaminacion)}</td>
+                            <td className="text-right font-mono text-xs text-green-950" style={{ background: 'var(--c-hl-accent2)' }}>{fs(diaSerafinado + diaContaminacion)}</td>
                             <td className="text-right font-mono text-xs text-green-950">{fs(diaRedondeo)}</td>
-                            <td className="text-right font-mono text-xs text-green-800" style={{ background: '#bbf7d0' }}>{fs(diaEfectivoFinal)}</td>
-                            <td className="text-right font-mono text-xs text-green-800" style={{ background: '#bbf7d0' }}>{fs(diaEntregado)}</td>
-                            <td className="text-right font-mono text-xs text-green-800" style={{ background: '#bbf7d0' }}>{fs(diaContabilizado)}</td>
+                            <td className="text-right font-mono text-xs text-green-800" style={{ background: 'var(--c-hl-cash2)' }}>{fs(diaEfectivoFinal)}</td>
+                            <td className="text-right font-mono text-xs text-green-800" style={{ background: 'var(--c-hl-cash2)' }}>{fs(diaEntregado)}</td>
+                            <td className="text-right font-mono text-xs text-green-800" style={{ background: 'var(--c-hl-cash2)' }}>{fs(diaContabilizado)}</td>
                             {renderDiferencia(diaFaltanteSobrante)}
                             <td className="text-center text-xs text-green-950">—</td>
                           </tr>
