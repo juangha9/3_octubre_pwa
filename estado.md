@@ -145,12 +145,12 @@ metadata:
 9. **Ancho de tablas FIJO (no dinámico)**: la Tabla de Turnos y la tabla de Registros (modo Completo) pasaron a `table-fixed` con `minWidth` = suma exacta de columnas (1390/1094 y 1200) — el contenido largo (nombres de cliente en selects, montos) ya NO ensancha la tabla; si no entra, scroll horizontal del contenedor.
 10. **Soft delete también aquí**: "Eliminar" marca `deleted_at/deleted_by` (recuperable desde Seguimiento→Papelera); `loadDia` y el chequeo de "Corregir fecha" filtran eliminados.
 
-### Base de datos — migración 013 (⚠️ PENDIENTE DE APLICAR en Supabase)
+### Base de datos — migración 013 (✅ APLICADA en Supabase)
 - `013_registro_ventas_auditoria_softdelete.sql`:
   - `registro_ventas.deleted_at/deleted_by` + índice parcial.
   - Tabla `registro_ventas_log` (jsonb old/new, `usuario_id = auth.uid()`, sin FK para sobrevivir a borrados físicos) + trigger `trg_audit_registro_ventas` (SECURITY DEFINER) que registra INSERT/UPDATE/SOFT_DELETE/RESTORE/DELETE y omite updates sin cambios.
   - RLS: log SELECT solo admin+; en `registro_ventas` se reemplazó la política `FOR ALL` por políticas por operación — **DELETE físico solo superadmin** (la app ya no lo usa).
-  - **La UI de Seguimiento/Ventas consulta `deleted_at` y el log → aplicar la migración ANTES de desplegar este build.**
+  - La UI de Seguimiento/Ventas consulta `deleted_at` y el log.
 
 ### Otros
 - **Fix build pre-existente**: `npm i -D @types/node` + `vite.config.ts` migrado de `path/__dirname` a `fileURLToPath(new URL(...))`; `CompraModal.tsx` tipa `productosEnCompra: string[]` (error TS2345). `npm run build` (tsc -b + vite) ahora pasa en verde.
@@ -185,7 +185,47 @@ metadata:
 
 ### Ventas (VentasDelDiaPage)
 6. **Fix 400 (Bad Request) al escribir la fecha a mano**: al teclear en `<input type="date">` el valor queda vacío/incompleto → se consultaba Supabase con `fecha=eq.` (vacío) → 400. Nuevo helper `esFechaValida()` en `lib/date.ts`; `loadDia` y `handleFixDate` ignoran la carga hasta que la fecha sea completa y real.
-7. **Comboboxes (Cliente, Producto, Turno)**: nuevo componente reutilizable `src/components/Combobox.tsx` — editable (se escribe para filtrar) pero **solo guarda un valor que coincida** con una opción; sin coincidencia al salir, revierte (no persiste texto libre). Menú `position: fixed` para no ser recortado por el `overflow` de las tablas; teclado (flechas/Enter/Escape). Turno usa opciones 1–4 (solo reconoce 1 a 4). Reemplaza los `<select>` de Cliente/Producto/Turno en la fila de alta, la edición en línea y el crédito rápido. `handleRegBlur(id, override?)` acepta el valor recién confirmado para no depender de estado stale.
+7. **Combobox editable** (`src/components/Combobox.tsx`): componente reutilizable — editable (se escribe para filtrar) pero **solo guarda un valor que coincida** con una opción; sin coincidencia al salir, revierte (no persiste texto libre). Menú `position: fixed` (no lo recorta el `overflow` de las tablas); teclado (flechas/Enter/Escape); opciones con `tabIndex={-1}` para que Tab salga directo a la celda siguiente (antes hacía falta pulsar Tab 2 veces). Prop `id` opcional para enfocar el input por programación. **Se usa solo en CLIENTE** (fila de alta y edición en línea) y en el turno del crédito rápido (Abreviado). `handleRegBlur(id, override?)` acepta el valor recién confirmado para no depender de estado stale.
+8. **PRODUCTO y TURNO → `<select>` nativo con selección por tecla** (decisión de UX: el combobox resultó incómodo ahí): se revirtieron a `<select>`, pero con `onKeyDown` propio que selecciona **al instante con cada tecla** y hace `preventDefault()` (el typeahead nativo acumula teclas en un búfer ~1s y se trababa: R,P,D → "RPD" sin coincidencia). Helpers `combustibleCodigoPorTecla` (D→DB5, R→REGULAR, P→PREMIUM, por inicial del código) y `turnoIdPorTecla` (1–4 → turno por posición). Aplica en fila de alta y edición en línea.
+9. **Foco a CLIENTE tras Enter en GALONES**: al crear la fila (Enter en galones), el foco vuelve al combobox de CLIENTE (`id="venta-nuevo-cliente"`) para encadenar el siguiente registro sin ratón.
+10. **Arrastre de TURNO y PRODUCTO en la fila nueva** (intencional, documentado en `saveRegistro`): al guardar se conservan `turno_id`, `tipo_atencion` y `tipo_combustible` del registro anterior; el resto se limpia. Acelera el registro de varios vales del mismo turno/combustible.
+11. **Botón "+ Agregar" movido a la columna ACCIONES** (antes estaba en VARIACIÓN); VARIACIÓN muestra "—" en la fila de alta.
+
+### Seguimiento (CorporativoPage)
+12. **Columna ACCIONES configurable**: la columna de botones (Historial / Editar / Eliminar) pasó a ser un miembro más de `COLUMNAS` (key `'acciones'`), así aparece en **"Editar encabezado"** con checkbox de visibilidad y **reordenable** por arrastre, como el resto. En modo lectura `contenidoVista('acciones')` pinta los botones (o Restaurar en papelera); en edición `controlEdicion('acciones')` pinta Guardar/Cancelar. Se quitó la `<th>`/`<td>` fija del final y la constante `ANCHO_ACCIONES` (ahora es `width` en `COLUMNAS`); `colSpan`/`anchoTabla`/`filaTotales` ya no suman una columna extra. Nota: al agregar futuras columnas seguir la guía del bloque 2026-07-07 (registrar en `COLUMNAS`, `controlEdicion`, `contenidoVista`, `CLASE_VISTA`, y `COL_ALIGN` si es numérica).
+13. **Historial "Creado" con TODOS los campos**: la entrada INSERT del historial mostraba solo galones/producto/importe/empresa; ahora lista **todos** los campos con los que se creó la fila (conductor, DNI, placa, ticket, vale, fecha, turno, precio, factura, estado…) recorriendo `CAMPOS_LOG` sobre `datos_new` (omite vacíos) en una tabla campo → valor.
+
+- `npm run build` (tsc -b + vite) verificado en verde. Commit `d0999af` (push a `main`).
+
+## Cambios de esta sesión (2026-07-09)
+
+### Tema oscuro — variantes `hover:` con color fijo
+1. **Los desplegables de Seguimiento se resaltaban en blanco sobre texto claro**: el bloque de overrides de `index.css` redefinía `.bg-white` / `.bg-slate-50`, pero Tailwind emite la variante hover como una **clase distinta** (`.hover\:bg-slate-50:hover`) que esas reglas no alcanzaban. Se añadieron los overrides de las variantes hover (mayor especificidad → ganan sin `!important`). Cubre `MultiSelectDropdown`, "Editar encabezado", OSINERGMIN y Ventas. El `<select>` de Estado nunca falló: lo pinta el navegador vía `color-scheme: dark`.
+
+### Ventas (VentasDelDiaPage) — grid tipo hoja de cálculo en modo COMPLETO
+2. **Nuevo `src/components/CeldaGrid.tsx`**: celda con semántica de Sheets. Un clic **selecciona** (recuadro azul, `.celda-activa`) sin entrar en edición; Enter / F2 / doble clic / teclear encima montan el editor. El `<input>` solo existe mientras se edita: así el foco vive en el `<td>` y las flechas navegan en vez de mover el cursor. *Roving tabindex* (solo la celda activa es tabulable).
+   - **Columnas del grid = posición en el `<tr>`, de 1 a 11** (FECHA=0 y ACCIONES=12 quedan fuera). Al añadir/mover columnas hay que actualizar `CAMPO_POR_COL`, `COLS_TEXTO`, `COL_MAX` y los índices literales de `onGridKeyDown` (7=TURNO, 8=PRODUCTO, 9=GALONES, 1=CLIENTE).
+3. **Teclado**: flechas navegan; Ctrl+C copia la celda (con **"marching ants"** animadas, `.celda-copiada`, borde de guiones en `::after`); Ctrl+V pega solo en columnas de texto libre (`COLS_TEXTO`); Supr/Retroceso las vacían; teclear reemplaza; en TURNO/PRODUCTO la tecla (1-4 / R,P,D) aplica el valor sin abrir el `<select>`.
+4. **Ctrl+Z — un solo nivel, solo celdas**: `ultimoCambio` guarda `{id, campo, anterior}`. No deshace altas ni bajas (las bajas van a Papelera). **`bloquearDeshacerFueraDelGrid`** (`onKeyDownCapture` en la raíz de la página) **bloquea el Ctrl+Z/Ctrl+Y nativo fuera del grid**: los inputs de precios y de turnos guardan en `onBlur`, así que un deshacer nativo revertía el texto sin verse y el blur persistía el valor viejo (llegó a reescribir el precio de un producto).
+5. **Fecha persistente**: `sessionStorage['ventas.fecha']`. Sobrevive a cambiar de pestaña (la página se desmonta), pero **no** a cerrar el navegador — al día siguiente arranca en hoy y no se registra sobre la fecha de ayer.
+6. **Alta solo con Enter**: en la fila azul, Enter sobre GALONES da de alta el registro (`salirEdicion(guardar, confirmarNuevo)`); Tab, flechas y clic fuera dejan el borrador intacto. `guardandoNuevoRef` evita el doble alta (blur + clic en "+ Agregar").
+
+### Ventas — el precio del día dejó de ser retroactivo
+7. **`handleRegBlur` reescribía `precio_unit_centimos` con el precio de hoy** cada vez que se tocaba *cualquier* celda de una fila ya guardada (no había trigger en BD; era todo del frontend). Nuevo **`precioDeFila(r, codigo)`**: conserva el precio con el que se grabó la venta y solo recurre al precio del día si la fila no tiene precio propio (créditos rápidos, que nacen en 0) o si se le cambia el producto.
+
+### Base de datos — migración 014 (✅ APLICADA en Supabase)
+8. `014_registro_ventas_importe_declarado.sql`: **`registro_ventas.importe_declarado_centimos`** (bigint, nullable).
+   - La consola cobra con un precio unitario de **más de 2 decimales**; `precios_diarios` guarda 2. Al completar en COMPLETO un crédito registrado en ABREVIADO, `galones × precio` no coincide con el total de consola por 1-2 céntimos (el techo real es `galones × 0.005`, **no** una constante: 20 gl pueden dar 0.10 → nunca validar contra un máximo fijo).
+   - `importe_centimos` = lo que se factura al cliente de crédito (galones × precio). `importe_declarado_centimos` = lo que marcó la consola; se escribe en el alta rápida y **nunca se sobrescribe** al completar la fila. `NULL` si la venta nació en COMPLETO (ahí el sistema no puede saber que hubo variación).
+   - Backfill: los rápidos aún sin completar copian su importe. Los ya completados antes de la migración perdieron el dato → quedan `NULL` y VARIACIÓN muestra `—`, no cero.
+9. **VARIACIÓN redefinida** = `importe_centimos − importe_declarado_centimos`. Ya no mira el precio del día (cambiarlo no la mueve) y **persiste** tras guardar. Solo vive en Ventas (Seguimiento ya no la tiene) y es ilustrativa.
+10. **Redondeo sugerido por turno** (`redondeoSugeridoPorTurno`): Σ VARIACIÓN de las filas del turno. Aparece como `sug. +0.03` clicable bajo el input de REDONDEO. La cuenta cierra sola: `efectivo = consola − … − Σ importe_centimos + redondeo` ⇒ con `redondeo = Σ variación` queda `consola − Σ importe_declarado`, que es lo que la consola cobró de verdad.
+11. **`handleShiftInputBlur(turnoId, override?)`**: mismo patrón que `handleRegBlur`. El `<select>` de Colaborador reimplementaba a mano el payload completo dentro de un `setInputsMap` (efectos dentro de un state updater); ahora ambos llaman al mismo sitio.
+
+### Ventas — Combobox de CLIENTE
+12. **Ya no se vacía al primer clic**: `onFocus` hacía `setQuery('')` y el texto visible es la query con el menú abierto. Nuevo estado `tecleado`: al enfocar muestra la opción actual seleccionada de punta a punta (teclear la reemplaza), la lista sigue completa, y entrar y salir sin escribir no toca el valor ni dispara guardado.
+13. **Sugerencia del cliente anterior** (`sugerencia` + `abrirAlEnfocar={false}`): en la fila de alta no despliega el menú al entrar; propone el cliente del último vale del día como `placeholder` (tenue, "al fondo de la celda") y lo acepta con Enter o Tab. Escribir lo descarta; `↓` despliega la lista.
+14. **Bug sutil corregido**: salir de CLIENTE con Tab tras escribir perdía el texto — `setEditando(false)` desmonta el Combobox y **React no emite `blur` al quitar del DOM un nodo enfocado**. `salirEdicion` fuerza el blur antes de desmontar.
 
 - `npm run build` (tsc -b + vite) verificado en verde.
 
@@ -293,7 +333,8 @@ supabase/
     010_varillaje_stock_cotizador.sql ← fn_stock_actual() (Varillaje→Cotizador)
     011_registro_compras.sql        ← compras + compra_lineas + compra_fletes + fn_guardar_compra()
     012_flete_por_galon.sql         ← flete por galón (compra_fletes.precio_gl) + RPC actualizada
-    013_registro_ventas_auditoria_softdelete.sql ← ⚠️ POR APLICAR: log auditoría + soft delete registro_ventas
+    013_registro_ventas_auditoria_softdelete.sql ← aplicada: log auditoría + soft delete registro_ventas
+    014_registro_ventas_importe_declarado.sql    ← aplicada: importe_declarado_centimos (total de consola del alta ABREVIADO)
 ```
 
 **Why:** Registrar el estado exacto para que futuras sesiones puedan continuar sin re-derivar qué se hizo.

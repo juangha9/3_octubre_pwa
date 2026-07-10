@@ -22,6 +22,11 @@ interface ComboboxProps {
   allowEmpty?: boolean
   /** id del <input> interno (para enfocarlo por programación, p. ej. tras guardar). */
   id?: string
+  /** `value` de la opción propuesta cuando la celda está vacía: se ve tenue, como
+      el fondo, y se acepta con Enter o Tab. Escribir la descarta. */
+  sugerencia?: string
+  /** Abrir el menú al enfocar. Con `false` solo se abre al escribir o con ↓. */
+  abrirAlEnfocar?: boolean
 }
 
 /**
@@ -43,11 +48,17 @@ export default function Combobox({
   disabled = false,
   allowEmpty = true,
   id,
+  sugerencia,
+  abrirAlEnfocar = true,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIdx, setActiveIdx] = useState(0)
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null)
+  // `false` mientras `query` sea solo el reflejo de la opción ya elegida: al
+  // abrir se muestra ese texto (no se vacía la celda) y la lista sigue completa.
+  // Pasa a `true` en cuanto el usuario teclea, y entonces `query` filtra.
+  const [tecleado, setTecleado] = useState(false)
 
   const inputRef = useRef<HTMLInputElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -61,9 +72,14 @@ export default function Combobox({
   // Texto visible: al escribir muestra `query`; si no, la etiqueta seleccionada.
   const display = open ? query : selectedLabel
 
+  // La sugerencia solo se ofrece con la celda vacía y sin nada tecleado: se
+  // pinta como placeholder (tenue, "al fondo") y se acepta con Enter o Tab.
+  const sugerenciaLabel = sugerencia ? options.find(o => o.value === sugerencia)?.label ?? '' : ''
+  const haySugerencia = !value && !tecleado && sugerenciaLabel !== ''
+
   const norm = (s: string) => s.trim().toLowerCase()
   const filtered =
-    open && query.trim() !== ''
+    open && tecleado && query.trim() !== ''
       ? options.filter(o => norm(o.label).includes(norm(query)))
       : options
 
@@ -96,7 +112,7 @@ export default function Combobox({
       document.removeEventListener('mousedown', onDocMouseDown)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, query, options])
+  }, [open, query, tecleado, options])
 
   function openMenu() {
     openRef.current = true
@@ -106,6 +122,23 @@ export default function Combobox({
     openRef.current = false
     setOpen(false)
     setQuery('')
+    setTecleado(false)
+  }
+
+  /** Mostrar la opción actual (no vaciar) y resaltarla en la lista. */
+  function openFromSelection() {
+    setQuery(selectedLabel)
+    setTecleado(false)
+    setActiveIdx(Math.max(0, options.findIndex(o => o.value === value)))
+    if (abrirAlEnfocar) openMenu()
+  }
+
+  /** Acepta la propuesta si sigue vigente. Devuelve si hizo algo. */
+  function aceptarSugerencia(): boolean {
+    if (!haySugerencia || !sugerencia) return false
+    closeMenu()
+    commitValue(sugerencia)
+    return true
   }
 
   function commitValue(next: string) {
@@ -119,6 +152,8 @@ export default function Combobox({
     // `openRef` es síncrono: evita doble-commit (blur + mousedown) y evita
     // commitear tras un Escape que ya cerró el menú.
     if (!openRef.current) return
+    // Entrar y salir sin escribir nada (un clic suelto) no debe tocar el valor.
+    if (!tecleado) { closeMenu(); return }
     const q = norm(query)
     let next = value
     if (q === '') {
@@ -142,7 +177,8 @@ export default function Combobox({
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      if (!open) { openMenu(); return }
+      // ↓ despliega la lista siempre, aunque el foco no la abra por sí solo.
+      if (!open) { openFromSelection(); openMenu(); return }
       setActiveIdx(i => Math.min(i + 1, filtered.length - 1))
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
@@ -150,7 +186,10 @@ export default function Combobox({
     } else if (e.key === 'Enter') {
       e.preventDefault()
       if (open && filtered[activeIdx]) selectOption(filtered[activeIdx])
-      else closeAndCommit()
+      else if (!aceptarSugerencia()) closeAndCommit()
+    } else if (e.key === 'Tab') {
+      // Sin preventDefault: la navegación entre celdas la decide quien envuelve.
+      aceptarSugerencia()
     } else if (e.key === 'Escape') {
       e.preventDefault()
       closeMenu() // cancelar sin persistir el texto
@@ -166,10 +205,12 @@ export default function Combobox({
         type="text"
         disabled={disabled}
         className={className}
-        placeholder={placeholder}
+        placeholder={haySugerencia ? sugerenciaLabel : placeholder}
         value={display}
-        onFocus={() => { openMenu(); setQuery(''); setActiveIdx(0) }}
-        onChange={e => { setQuery(e.target.value); openMenu(); setActiveIdx(0) }}
+        // Se muestra la opción actual seleccionada de punta a punta: teclear la
+        // reemplaza, pero un clic suelto no borra nada.
+        onFocus={e => { openFromSelection(); e.currentTarget.select() }}
+        onChange={e => { setQuery(e.target.value); setTecleado(true); openMenu(); setActiveIdx(0) }}
         onKeyDown={onKeyDown}
         // Al perder foco por teclado (Tab) confirmamos/cerramos. Al hacer clic en
         // una opción no se dispara: el menú previene el blur con preventDefault.

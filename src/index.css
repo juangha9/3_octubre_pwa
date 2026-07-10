@@ -159,6 +159,48 @@
     font-size: 0.875rem;   /* 14px */
   }
 
+  /* Celda seleccionada del grid tipo hoja de cálculo (ver CeldaGrid).
+     `outline` en vez de `border` para no descuadrar el ancho de la columna. */
+  .table-excel tbody td.celda-activa {
+    outline: 2px solid rgb(var(--c-primary-dark));
+    outline-offset: -2px;
+    background-color: var(--c-hl-info);
+  }
+
+  /* Celda copiada al portapapeles: borde de guiones en marcha ("marching ants"),
+     como el de Excel / Sheets. Cada borde es un degradado repetido de 12px cuyo
+     `background-position` se desplaza justo un patrón completo, de modo que la
+     animación cicla sin salto. Va en ::after para no pisar el outline de la
+     celda activa (una celda puede estar copiada y seleccionada a la vez). */
+  .table-excel tbody td.celda-copiada {
+    position: relative;
+  }
+  .table-excel tbody td.celda-copiada::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    --ant: rgb(var(--c-primary-dark));
+    background-image:
+      repeating-linear-gradient(90deg, var(--ant) 0 6px, transparent 6px 12px),
+      repeating-linear-gradient(90deg, var(--ant) 0 6px, transparent 6px 12px),
+      repeating-linear-gradient(0deg, var(--ant) 0 6px, transparent 6px 12px),
+      repeating-linear-gradient(0deg, var(--ant) 0 6px, transparent 6px 12px);
+    background-size: 12px 2px, 12px 2px, 2px 12px, 2px 12px;
+    background-position: 0 0, 0 100%, 0 0, 100% 0;
+    background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+    animation: hormigas 0.7s linear infinite;
+  }
+  @keyframes hormigas {
+    to {
+      background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .table-excel tbody td.celda-copiada::after { animation: none; }
+  }
+
   /* ── Botones ── */
   .btn {
     @apply inline-flex items-center justify-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium
@@ -226,6 +268,13 @@
 :root[data-theme='dark'] .bg-green-50 { background-color: #12312a; }
 :root[data-theme='dark'] .bg-green-100 { background-color: #14392a; }
 :root[data-theme='dark'] .focus\:bg-white:focus { background-color: #24324a; }
+/* Hover: Tailwind emite `.hover\:bg-X:hover`, una clase distinta de `.bg-X`,
+   así que las reglas de arriba no la alcanzan. Sin esto la opción bajo el
+   cursor se pinta blanca y el texto claro deja de leerse. */
+:root[data-theme='dark'] .hover\:bg-white:hover,
+:root[data-theme='dark'] .hover\:bg-slate-50:hover { background-color: #24324a; }
+:root[data-theme='dark'] .hover\:bg-slate-100:hover { background-color: #2d3d57; }
+:root[data-theme='dark'] .hover\:bg-blue-50:hover { background-color: #17273f; }
 /* Variantes con !important (p. ej. fila en edición de Seguimiento) */
 :root[data-theme='dark'] .\!bg-blue-50 { background-color: #17273f !important; }
 :root[data-theme='dark'] .\!bg-slate-100 { background-color: #24324a !important; }

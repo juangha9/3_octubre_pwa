@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
 import { hoyLocal, esFechaValida } from '@/lib/date'
 import { formatSoles, toCentimos, sumCentimos } from '@/lib/money'
 import Combobox from '@/components/Combobox'
+import CeldaGrid, { type Caret } from '@/components/CeldaGrid'
 import type { Turno, EmpresaCliente, TipoCombustible } from '@/types'
 
 // ─── Tipos Locales ────────────────────────────────────────────────
@@ -43,6 +44,8 @@ interface RegistroRow {
   cantidad_galones: number
   precio_unit_centimos: number
   importe_centimos: number
+  /** Total tomado de la consola al registrar en ABREVIADO. NULL si nació en COMPLETO. */
+  importe_declarado_centimos: number | null
 }
 
 interface NuevoReg {
@@ -128,7 +131,51 @@ const NUEVO_VACIO: NuevoReg = {
   cantidad_galones: '',
 }
 
+// ─── Grid de la tabla Completo (navegación tipo hoja de cálculo) ──
+// Las columnas se numeran por su posición en el <tr>. FECHA (0) y ACCIONES (12)
+// quedan fuera del grid: no aportan nada al copiar ni al navegar.
+const COL_MIN = 1
+const COL_MAX = 11
+
+/** Campo del buffer editable que corresponde a cada columna navegable. */
+const CAMPO_POR_COL: Record<number, keyof RegistroInputs> = {
+  1: 'empresa_id',        // CLIENTE
+  2: 'numero',            // VALE LIC.
+  3: 'serie',             // TICKET
+  4: 'placa',             // PLACA
+  5: 'conductor',         // CONDUCTOR
+  6: 'dni_conductor',     // DNI
+  7: 'turno_id',          // TURNO
+  8: 'tipo_combustible',  // PRODUCTO
+  9: 'cantidad_galones',  // GALONES
+  10: 'importe',          // PRECIO TOTAL (solo editable si GALONES = 0)
+}
+
+/** Columnas de texto libre: aceptan teclear encima, pegar y borrar con Supr. */
+const COLS_TEXTO = new Set([2, 3, 4, 5, 6, 9, 10])
+
+interface Celda { f: number; c: number }
+
+/** Fila 0 = fila de entrada rápida; fila i+1 = registros[i]. */
+const FILA_NUEVA = 0
+
 // ─── Helpers ──────────────────────────────────────────────────────
+
+/** Vuelca una fila de la BD al formato del buffer editable. */
+function aInputs(r: RegistroRow): RegistroInputs {
+  return {
+    empresa_id: r.empresa_id ?? '',
+    numero: r.numero ?? '',
+    placa: r.placa ?? '',
+    serie: r.serie ?? '',
+    conductor: r.conductor ?? '',
+    dni_conductor: r.dni_conductor ?? '',
+    turno_id: String(r.turno_id),
+    tipo_combustible: r.tipo_combustible,
+    cantidad_galones: String(r.cantidad_galones),
+    importe: (r.importe_centimos / 100).toFixed(2),
+  }
+}
 
 function calcEfectivoFinal(
   c: CierreRow,
@@ -149,6 +196,16 @@ function calcEfectivoFinal(
 
 const fs = (v: number | null | undefined) => (v != null ? formatSoles(v) : '—')
 
+// La fecha de trabajo sobrevive a ir y volver de otra pestaña (la página se
+// desmonta), pero NO a cerrar el navegador: al día siguiente se vuelve a abrir
+// en hoy y no se registra por error sobre la fecha de ayer.
+const FECHA_KEY = 'ventas.fecha'
+
+function fechaInicial(): string {
+  const guardada = sessionStorage.getItem(FECHA_KEY)
+  return esFechaValida(guardada) ? guardada : hoyLocal()
+}
+
 export default function VentasPage() {
   const { profile } = useAuth()
 
@@ -157,7 +214,7 @@ export default function VentasPage() {
   const [modo, setModo] = useState<Modo>('abreviado')
 
   // ─── ESTADO: REGISTRO DIARIO ────────────────────────────────────
-  const [fecha, setFecha] = useState(hoyLocal())
+  const [fecha, setFecha] = useState(fechaInicial)
   const [cierresMap, setCierresMap] = useState<Record<number, CierreRow>>({})
   const [precios, setPrecios] = useState({ db5: '', regular: '', premium: '' })
   const [precioId, setPrecioId] = useState<string | null>(null)
@@ -183,6 +240,20 @@ export default function VentasPage() {
   // Edición en línea para registros (Completo) — cada fila es editable directamente,
   // sin un modo "editar" explícito, igual que la Tabla de Turnos de arriba.
   const [regInputsMap, setRegInputsMap] = useState<Record<string, RegistroInputs>>({})
+
+  // Navegación tipo hoja de cálculo sobre la tabla de modo Completo.
+  const [sel, setSel] = useState<Celda | null>(null)
+  const [editando, setEditando] = useState(false)
+  const [caret, setCaret] = useState<Caret>('todo')
+  // Celda cuyo contenido está en el portapapeles (borde animado, como Excel).
+  const [copiada, setCopiada] = useState<Celda | null>(null)
+  // Un único nivel de deshacer, a nivel de celda (ver `deshacer`).
+  const [ultimoCambio, setUltimoCambio] =
+    useState<{ id: string; campo: keyof RegistroInputs; anterior: string } | null>(null)
+  const gridRef = useRef<HTMLTableElement>(null)
+  // Guard síncrono: `savingReg` viaja por setState y no frena dos disparos
+  // seguidos del guardado de la fila nueva (p. ej. blur + clic en "+ Agregar").
+  const guardandoNuevoRef = useRef(false)
 
   // Catálogos de referencia
   const [turnos, setTurnos] = useState<Turno[]>([])
@@ -247,7 +318,7 @@ export default function VentasPage() {
           .select(
             'id, turno_id, tipo_atencion, empresa_id, conductor, placa, serie, numero, ' +
             'dni_conductor, tipo_combustible, cantidad_galones, precio_unit_centimos, ' +
-            'importe_centimos, empresas_clientes(nombre)'
+            'importe_centimos, importe_declarado_centimos, empresas_clientes(nombre)'
           )
           .eq('fecha', fecha)
           .is('deleted_at', null)
@@ -348,6 +419,21 @@ export default function VentasPage() {
       setFixingDate(false)
     }
   }
+
+  // Solo se recuerdan fechas completas: mientras se teclea a mano el valor
+  // pasa por estados parciales que no deben quedar guardados.
+  useEffect(() => {
+    if (esFechaValida(fecha)) sessionStorage.setItem(FECHA_KEY, fecha)
+  }, [fecha])
+
+  // Cambiar de día trae otras filas: el deshacer y el portapapeles del grid
+  // apuntarían a registros que ya no están en pantalla.
+  useEffect(() => {
+    setUltimoCambio(null)
+    setCopiada(null)
+    setSel(null)
+    setEditando(false)
+  }, [fecha])
 
   useEffect(() => {
     if (activeTab === 'registro') {
@@ -519,6 +605,19 @@ export default function VentasPage() {
     return 0
   }
 
+  // ── Precio con el que se valora una fila YA GUARDADA ──────────
+  // Cambiar el precio del día NO debe reescribir lo ya registrado: cada venta
+  // conserva el `precio_unit_centimos` con el que se grabó. Solo se recurre al
+  // precio del día cuando la fila aún no tiene precio propio (créditos rápidos,
+  // que nacen con 0) o cuando se le cambia el producto y el precio viejo ya no
+  // corresponde. La columna VARIACIÓN es justamente la que muestra la brecha
+  // entre el precio histórico de la fila y el precio vigente.
+  function precioDeFila(r: RegistroRow, codigoEditado: string): number {
+    const mismoProducto = codigoEditado === r.tipo_combustible
+    if (mismoProducto && r.precio_unit_centimos > 0) return r.precio_unit_centimos
+    return precioDiario(codigoEditado)
+  }
+
   // ── Guardar Cambios en la Tabla de Turnos (Control de Ventas) ──
   const handleInputChange = (turnoId: number, field: keyof ShiftInputs, val: string) => {
     setInputsMap(prev => ({
@@ -530,9 +629,12 @@ export default function VentasPage() {
     }))
   }
 
-  const handleShiftInputBlur = async (turnoId: number, _changedField?: keyof ShiftInputs) => {
-    const inputs = inputsMap[turnoId]
-    if (!inputs) return
+  // `override` permite guardar un valor recién elegido sin esperar al re-render
+  // (setState es asíncrono, `inputsMap` aún no lo refleja en este tick).
+  const handleShiftInputBlur = async (turnoId: number, override?: Partial<ShiftInputs>) => {
+    const base = inputsMap[turnoId]
+    if (!base) return
+    const inputs = override ? { ...base, ...override } : base
 
     const totalConsola = inputs.total_consola === '' ? null : toCentimos(inputs.total_consola)
     const yape = toCentimos(inputs.yape)
@@ -599,6 +701,8 @@ export default function VentasPage() {
   async function saveRegistro() {
     const galones = parseFloat(nuevo.cantidad_galones)
     if (!nuevo.tipo_combustible || !(galones > 0) || !profile) return
+    if (guardandoNuevoRef.current) return
+    guardandoNuevoRef.current = true
     setSavingReg(true)
     const precioUnit = precioDiario(nuevo.tipo_combustible)
 
@@ -619,6 +723,9 @@ export default function VentasPage() {
         cantidad_galones: galones,
         precio_unit_centimos: precioUnit,
         importe_centimos: Math.round(galones * precioUnit),
+        // Nace en COMPLETO: no hay total de consola contra el que comparar, así
+        // que su variación de céntimos es invisible para el sistema.
+        importe_declarado_centimos: null,
       })
       if (error) throw error
 
@@ -632,12 +739,15 @@ export default function VentasPage() {
         tipo_combustible: p.tipo_combustible,
       }))
       loadDia(true) // Refresco silencioso
-      // Devolver el foco al inicio de la fila (CLIENTE) para empezar el
+      // Devolver el cursor al inicio de la fila (CLIENTE) para empezar el
       // siguiente registro sin usar el ratón.
-      setTimeout(() => document.getElementById('venta-nuevo-cliente')?.focus(), 0)
+      setSel({ f: FILA_NUEVA, c: 1 })
+      setCaret('ninguno')
+      setEditando(true)
     } catch (err) {
       alert('Error al agregar el registro de venta: ' + (err as any).message)
     } finally {
+      guardandoNuevoRef.current = false
       setSavingReg(false)
     }
   }
@@ -659,6 +769,9 @@ export default function VentasPage() {
         cantidad_galones: 0,
         precio_unit_centimos: 0,
         importe_centimos: toCentimos(monto),
+        // El monto sale de la consola: se conserva para poder calcular después
+        // el redondeo cuando la fila se complete con galones en COMPLETO.
+        importe_declarado_centimos: toCentimos(monto),
         empresa_id: null,
       })
       if (error) throw error
@@ -675,20 +788,7 @@ export default function VentasPage() {
   // ── Reconstruir buffer editable de registros (reactivo a `registros`) ──
   useEffect(() => {
     const map: Record<string, RegistroInputs> = {}
-    for (const r of registros) {
-      map[r.id] = {
-        empresa_id: r.empresa_id ?? '',
-        numero: r.numero ?? '',
-        placa: r.placa ?? '',
-        serie: r.serie ?? '',
-        conductor: r.conductor ?? '',
-        dni_conductor: r.dni_conductor ?? '',
-        turno_id: String(r.turno_id),
-        tipo_combustible: r.tipo_combustible,
-        cantidad_galones: String(r.cantidad_galones),
-        importe: (r.importe_centimos / 100).toFixed(2),
-      }
-    }
+    for (const r of registros) map[r.id] = aInputs(r)
     setRegInputsMap(map)
   }, [registros])
 
@@ -706,8 +806,10 @@ export default function VentasPage() {
     // `override` permite que un Combobox pase su valor recién confirmado sin
     // depender del estado (que aún podría estar desactualizado en este tick).
     const inputs = override ? { ...base, ...override } : base
+    const original = registros.find(x => x.id === id)
+    if (!original) return
     const galones = parseFloat(inputs.cantidad_galones) || 0
-    let precioUnit = precioDiario(inputs.tipo_combustible)
+    let precioUnit = precioDeFila(original, inputs.tipo_combustible)
 
     let importeCentimos = 0
     if (galones === 0) {
@@ -720,10 +822,18 @@ export default function VentasPage() {
     const emp = empresas.find(x => x.id === inputs.empresa_id)
     const tipoAtencion = emp ? emp.tipo : 'particular'
 
+    // Mientras la fila siga sin galones, su importe ES el total declarado (el
+    // usuario puede corregirlo a mano). En cuanto tiene galones, `importe` pasa
+    // a ser galones × precio y el declarado queda intacto: es lo único que
+    // permite calcular después el redondeo del turno.
+    const importeDeclarado =
+      galones === 0 ? importeCentimos : original.importe_declarado_centimos
+
     try {
       const { error } = await supabase
         .from('registro_ventas')
         .update({
+          importe_declarado_centimos: importeDeclarado,
           turno_id: parseInt(inputs.turno_id),
           empresa_id: inputs.empresa_id || null,
           tipo_atencion: tipoAtencion,
@@ -759,6 +869,279 @@ export default function VentasPage() {
     loadDia(true) // Refresco silencioso
   }
 
+  // ── GRID (modo Completo): selección, navegación y portapapeles ──
+  // El `<td>` es lo enfocable mientras no se edita, así que las flechas y
+  // Ctrl+C/Ctrl+V llegan aquí en vez de moverse dentro de un input.
+
+  /** Fila `f` como registro guardado (null para la fila de entrada rápida). */
+  const filaRegistro = (f: number): RegistroRow | null =>
+    f === FILA_NUEVA ? null : registros[f - 1] ?? null
+
+  function esEditable(f: number, c: number): boolean {
+    if (c >= 1 && c <= 9) return true
+    if (c !== 10) return false
+    // PRECIO TOTAL solo se escribe a mano en créditos rápidos (sin galones);
+    // en el resto es un valor derivado de galones × precio.
+    const r = filaRegistro(f)
+    const inputs = r ? regInputsMap[r.id] : null
+    return !!inputs && (parseFloat(inputs.cantidad_galones) || 0) === 0
+  }
+
+  function aplicarValor({ f, c }: Celda, val: string) {
+    const campo = CAMPO_POR_COL[c]
+    if (!campo) return
+    const r = filaRegistro(f)
+    if (!r) {
+      if (campo === 'importe') return // la fila de entrada no tiene importe libre
+      setNuevo(p => ({ ...p, [campo]: val }))
+      return
+    }
+    handleRegInputChange(r.id, campo, val)
+  }
+
+  /** Deshace la edición de una celda devolviéndole el valor almacenado. */
+  function revertirCelda({ f, c }: Celda) {
+    const r = filaRegistro(f)
+    const campo = CAMPO_POR_COL[c]
+    if (!r || !campo) return
+    handleRegInputChange(r.id, campo, aInputs(r)[campo])
+  }
+
+  /**
+   * Persiste el cambio de UNA celda de una fila guardada.
+   *
+   * Pasa el valor por `override` porque `regInputsMap` todavía no lo refleja
+   * cuando el cambio se acaba de aplicar en este mismo manejador (setState es
+   * asíncrono). De paso anota el valor previo para poder deshacerlo.
+   */
+  function guardarCelda(f: number, c: number, valor: string) {
+    const r = filaRegistro(f)
+    const campo = CAMPO_POR_COL[c]
+    if (!r || !campo) return
+    const anterior = aInputs(r)[campo]
+    if (anterior === valor) return // nada que escribir
+    setUltimoCambio({ id: r.id, campo, anterior })
+    handleRegBlur(r.id, { [campo]: valor } as Partial<RegistroInputs>)
+  }
+
+  /** Valor actual de una celda en el buffer editable. */
+  function valorCelda(f: number, c: number): string {
+    const r = filaRegistro(f)
+    const campo = CAMPO_POR_COL[c]
+    if (!r || !campo) return ''
+    return regInputsMap[r.id]?.[campo] ?? ''
+  }
+
+  /**
+   * Deshace el último cambio de celda. Un solo nivel a propósito: un historial
+   * profundo sobre una tabla que se guarda sola invita a retroceder de más y
+   * dejar el registro en un estado que el usuario ya no reconoce. Las altas y
+   * las bajas no entran aquí (las bajas se recuperan desde la Papelera).
+   */
+  function deshacer() {
+    if (!ultimoCambio) return
+    const { id, campo, anterior } = ultimoCambio
+    setUltimoCambio(null)
+    // La fila pudo eliminarse (o quedar en otra fecha) desde que se anotó.
+    if (!registros.some(r => r.id === id)) return
+    handleRegInputChange(id, campo, anterior)
+    handleRegBlur(id, { [campo]: anterior } as Partial<RegistroInputs>)
+  }
+
+  /** La fila de entrada solo se graba con Enter desde GALONES (o con "+ Agregar"). */
+  function intentarGuardarNuevo() {
+    const gal = parseFloat(nuevo.cantidad_galones)
+    if (nuevo.tipo_combustible && gal > 0) saveRegistro()
+  }
+
+  function salirEdicion(guardar: boolean, confirmarNuevo = false) {
+    if (!editando || !sel) { setEditando(false); return }
+    const { f, c } = sel
+
+    // CLIENTE persiste por su cuenta (Combobox.onCommit), así que guardar aquí
+    // duplicaría el UPDATE. Pero hay que provocarle el blur ANTES de
+    // desmontarlo: React no emite blur al quitar del DOM un nodo enfocado, y lo
+    // tecleado se perdería al salir con Tab. Si ya está cerrado (Escape), su
+    // guard interno hace que este blur no confirme nada.
+    if (c === 1) {
+      const activo = document.activeElement
+      if (activo instanceof HTMLElement && gridRef.current?.contains(activo)) activo.blur()
+      setEditando(false)
+      if (!guardar) revertirCelda({ f, c })
+      return
+    }
+
+    setEditando(false)
+    if (!guardar) { revertirCelda({ f, c }); return }
+    if (f === FILA_NUEVA) {
+      // Solo Enter da de alta el registro: con Tab o las flechas se sigue
+      // rellenando el borrador sin crear nada.
+      if (c === 9 && confirmarNuevo) intentarGuardarNuevo()
+      return
+    }
+    guardarCelda(f, c, valorCelda(f, c))
+  }
+
+  function seleccionar(f: number, c: number) {
+    if (editando && sel) {
+      if (sel.f === f && sel.c === c) return // clic dentro de la celda en edición
+      salirEdicion(true)
+    }
+    setSel({ f, c })
+  }
+
+  function editarCelda(f: number, c: number, caretInicial: Caret = 'todo') {
+    if (!esEditable(f, c)) return
+    setSel({ f, c })
+    setCaret(c === 1 ? 'ninguno' : caretInicial)
+    setEditando(true)
+  }
+
+  function mover(df: number, dc: number) {
+    setSel(prev => {
+      const base = prev ?? { f: FILA_NUEVA, c: COL_MIN }
+      return {
+        f: Math.min(Math.max(base.f + df, FILA_NUEVA), registros.length),
+        c: Math.min(Math.max(base.c + dc, COL_MIN), COL_MAX),
+      }
+    })
+  }
+
+  /** En los extremos del grid se deja pasar el Tab para poder salir de la tabla. */
+  function tabSaleDelGrid(c: number, shift: boolean): boolean {
+    const destino = c + (shift ? -1 : 1)
+    return destino < COL_MIN || destino > COL_MAX
+  }
+
+  function onGridKeyDown(e: React.KeyboardEvent) {
+    if (!sel) return
+
+    if (editando) {
+      if (e.key === 'Escape') { e.preventDefault(); salirEdicion(false) }
+      // Solo Enter confirma el alta de la fila de entrada (`confirmarNuevo`).
+      else if (e.key === 'Enter') { e.preventDefault(); salirEdicion(true, true); mover(1, 0) }
+      else if (e.key === 'Tab') {
+        salirEdicion(true)
+        if (tabSaleDelGrid(sel.c, e.shiftKey)) return
+        e.preventDefault()
+        mover(0, e.shiftKey ? -1 : 1)
+      }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        // En CLIENTE y en los <select> las flechas son del editor (recorren el
+        // menú / las opciones). En los <input> confirman y bajan de celda; en
+        // los de tipo number eso evita además que la flecha altere el valor.
+        if (sel.c === 1 || sel.c === 7 || sel.c === 8) return
+        e.preventDefault()
+        salirEdicion(true)
+        mover(e.key === 'ArrowUp' ? -1 : 1, 0)
+      }
+      // Izquierda/derecha mueven el cursor dentro del texto, como en Sheets.
+      return
+    }
+
+    const k = e.key
+    if (k === 'ArrowUp') { e.preventDefault(); mover(-1, 0) }
+    else if (k === 'ArrowDown') { e.preventDefault(); mover(1, 0) }
+    else if (k === 'ArrowLeft') { e.preventDefault(); mover(0, -1) }
+    else if (k === 'ArrowRight') { e.preventDefault(); mover(0, 1) }
+    else if (k === 'Tab') {
+      if (tabSaleDelGrid(sel.c, e.shiftKey)) return
+      e.preventDefault()
+      mover(0, e.shiftKey ? -1 : 1)
+    }
+    else if (k === 'Escape') { setCopiada(null) } // apaga las hormigas, como en Excel
+    else if (k === 'Enter' || k === 'F2') { e.preventDefault(); editarCelda(sel.f, sel.c) }
+    else if (e.ctrlKey || e.metaKey) {
+      const tecla = k.toLowerCase()
+      if (tecla === 'z') { e.preventDefault(); deshacer() }
+      // Con `clipboard` disponible (contexto seguro) copiamos aquí; si no, se deja
+      // pasar y lo recoge `onGridCopy`. El pegado siempre va por `onGridPaste`.
+      else if (tecla === 'c') {
+        marcarCopiada(sel)
+        if (navigator.clipboard?.writeText) {
+          e.preventDefault()
+          navigator.clipboard.writeText(textoCelda(sel)).catch(() => {})
+        }
+      }
+    }
+    else if (e.altKey) return
+    else if (k === 'Delete' || k === 'Backspace') {
+      if (!COLS_TEXTO.has(sel.c) || !esEditable(sel.f, sel.c)) return
+      e.preventDefault()
+      aplicarValor(sel, '')
+      guardarCelda(sel.f, sel.c, '')
+    }
+    else if (k.length === 1) {
+      if (!esEditable(sel.f, sel.c)) return
+      e.preventDefault()
+      // Teclear sobre una celda reemplaza su contenido, como en una hoja de cálculo.
+      if (COLS_TEXTO.has(sel.c)) {
+        aplicarValor(sel, k)
+        editarCelda(sel.f, sel.c, 'fin')
+        return
+      }
+      // TURNO y PRODUCTO se resuelven con la propia tecla (1..4 / R, P, D) y se
+      // guardan al vuelo, sin abrir el <select>.
+      const directo = sel.c === 7 ? turnoIdPorTecla(k) : sel.c === 8 ? combustibleCodigoPorTecla(k) : null
+      if (directo) {
+        aplicarValor(sel, directo)
+        guardarCelda(sel.f, sel.c, directo)
+        return
+      }
+      editarCelda(sel.f, sel.c)
+    }
+  }
+
+  /** Texto visible de una celda; es lo que se copia al portapapeles. */
+  function textoCelda({ f, c }: Celda): string {
+    const el = gridRef.current?.querySelector(`[data-celda="${f}-${c}"]`)
+    return el?.textContent?.trim() ?? ''
+  }
+
+  const marcarCopiada = (celda: Celda) => setCopiada({ ...celda })
+  const esCopiada = (f: number, c: number) => !!copiada && copiada.f === f && copiada.c === c
+
+  function onGridCopy(e: React.ClipboardEvent) {
+    if (!sel || editando) return
+    e.clipboardData.setData('text/plain', textoCelda(sel))
+    marcarCopiada(sel)
+    e.preventDefault()
+  }
+
+  function onGridPaste(e: React.ClipboardEvent) {
+    if (!sel || editando) return
+    if (!COLS_TEXTO.has(sel.c) || !esEditable(sel.f, sel.c)) return
+    e.preventDefault()
+    setCopiada(null) // el pegado consume el portapapeles, igual que en Excel
+    // Pegar desde Excel arrastra tabuladores y saltos: se toma solo la 1ª celda.
+    const texto = e.clipboardData.getData('text/plain').split(/[\r\n\t]/)[0].trim()
+    aplicarValor(sel, texto)
+    guardarCelda(sel.f, sel.c, texto)
+  }
+
+  // Mover la selección enfoca el <td>, que es quien recibe las teclas.
+  useEffect(() => {
+    if (!sel || editando || modo !== 'completo' || activeTab !== 'registro') return
+    gridRef.current?.querySelector<HTMLElement>(`[data-celda="${sel.f}-${sel.c}"]`)?.focus()
+  }, [sel, editando, modo, activeTab])
+
+  // Al borrar la última fila la selección puede quedar fuera de rango.
+  useEffect(() => {
+    setSel(prev => (prev && prev.f > registros.length ? { ...prev, f: registros.length } : prev))
+  }, [registros.length])
+
+  // Clic fuera de la tabla estando en edición: confirmar, no perder lo escrito.
+  // Sin dependencias: cada render renueva el closure de `salirEdicion`.
+  useEffect(() => {
+    if (!editando) return
+    function onDown(ev: MouseEvent) {
+      if (gridRef.current?.contains(ev.target as Node)) return
+      salirEdicion(true)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  })
+
   // ── CÁLCULO REACTIVO: Créditos por turno (desde registros) ────
   const creditosPorTurno = useMemo(() => {
     const map: Record<number, { corporacion: number; licitaciones: number; particulares: number; chevron: number }> = {}
@@ -775,6 +1158,21 @@ export default function VentasPage() {
     return map
   }, [registros, turnos])
 
+  // ── Redondeo sugerido por turno ───────────────────────────────
+  // `total_consola` trae los importes reales de la consola (precio unitario con
+  // más de 2 decimales), pero a los créditos les descontamos galones × precio de
+  // 2 decimales. La suma de esas brechas es justo lo que hay que poner en
+  // REDONDEO para que el efectivo final calce. Solo entran las filas que
+  // conservan su total declarado: las nacidas en COMPLETO no tienen referencia.
+  const redondeoSugeridoPorTurno = useMemo(() => {
+    const map: Record<number, number> = {}
+    for (const r of registros) {
+      if (r.importe_declarado_centimos == null) continue
+      map[r.turno_id] = (map[r.turno_id] ?? 0) + (r.importe_centimos - r.importe_declarado_centimos)
+    }
+    return map
+  }, [registros])
+
   // ── Opciones para los comboboxes (Cliente, Producto, Turno) ───
   // Sólo se guarda un valor que coincida con estas opciones; texto libre sin
   // coincidencia no se persiste (lo maneja el propio Combobox).
@@ -787,6 +1185,11 @@ export default function VentasPage() {
     () => turnos.map((t, i) => ({ value: String(t.id), label: String(i + 1) })),
     [turnos]
   )
+  // Cliente del último vale registrado del día: se ofrece como sugerencia en la
+  // fila de entrada (`registros` viene ordenado por created_at ascendente).
+  const clienteSugerido = registros.length
+    ? registros[registros.length - 1].empresa_id ?? ''
+    : ''
 
   // ── Selección por tecla en los <select> de Producto y Turno ───
   // El typeahead nativo del <select> ACUMULA las teclas en un búfer (~1s):
@@ -860,6 +1263,144 @@ export default function VentasPage() {
     }
   }, [cierresHistorial])
 
+  // ── Fábricas de celdas del grid (modo Completo) ───────────────
+  const esActiva = (f: number, c: number) => !!sel && sel.f === f && sel.c === c
+  // Roving tabindex: una sola celda entra en el orden de tabulación. Sin
+  // selección todavía, es la primera, para poder llegar al grid con Tab.
+  const esTabbable = (f: number, c: number) =>
+    sel ? esActiva(f, c) : f === FILA_NUEVA && c === COL_MIN
+  const CLASE_EDITOR = 'input py-0 h-6 text-xs w-full'
+
+  /** Celda con <input> de texto o número. */
+  const celdaInput = (
+    f: number,
+    c: number,
+    valor: string,
+    onChange: (v: string) => void,
+    opts: {
+      numero?: boolean
+      step?: string
+      maxLength?: number
+      mayusculas?: boolean
+      placeholder?: string
+    } = {}
+  ) => (
+    <CeldaGrid
+      f={f}
+      c={c}
+      activa={esActiva(f, c)}
+      tabbable={esTabbable(f, c)}
+      copiada={esCopiada(f, c)}
+      editando={editando}
+      editable
+      caret={caret}
+      align={opts.numero ? 'right' : 'left'}
+      className={opts.numero ? 'font-mono' : opts.mayusculas ? 'uppercase' : ''}
+      contenido={valor}
+      onSeleccionar={() => seleccionar(f, c)}
+      onEditar={() => editarCelda(f, c)}
+      editor={
+        <input
+          type={opts.numero ? 'number' : 'text'}
+          step={opts.step}
+          maxLength={opts.maxLength}
+          placeholder={opts.placeholder}
+          className={`${CLASE_EDITOR} ${opts.numero ? 'text-right font-mono' : ''}`}
+          style={opts.mayusculas ? { textTransform: 'uppercase' } : undefined}
+          value={valor}
+          onChange={e => onChange(e.target.value)}
+        />
+      }
+    />
+  )
+
+  /** Celda con <select> (TURNO, PRODUCTO). */
+  const celdaSelect = (
+    f: number,
+    c: number,
+    valor: string,
+    etiqueta: string,
+    onChange: (v: string) => void,
+    opciones: { value: string; label: string }[],
+    porTecla: (k: string) => string | null,
+    vacio = false
+  ) => (
+    <CeldaGrid
+      f={f}
+      c={c}
+      activa={esActiva(f, c)}
+      tabbable={esTabbable(f, c)}
+      copiada={esCopiada(f, c)}
+      editando={editando}
+      editable
+      caret={caret}
+      contenido={etiqueta}
+      onSeleccionar={() => seleccionar(f, c)}
+      onEditar={() => editarCelda(f, c)}
+      editor={
+        <select
+          className={CLASE_EDITOR}
+          value={valor}
+          onChange={e => onChange(e.target.value)}
+          onKeyDown={e => {
+            const v = porTecla(e.key)
+            if (v) { e.preventDefault(); onChange(v) }
+          }}
+        >
+          {vacio && <option value="">—</option>}
+          {opciones.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      }
+    />
+  )
+
+  /** Celda de solo lectura: se puede seleccionar y copiar, no editar. */
+  const celdaLectura = (
+    f: number,
+    c: number,
+    contenido: React.ReactNode,
+    align: 'left' | 'right' | 'center' = 'right',
+    style?: React.CSSProperties,
+    className = ''
+  ) => (
+    <CeldaGrid
+      f={f}
+      c={c}
+      activa={esActiva(f, c)}
+      tabbable={esTabbable(f, c)}
+      copiada={esCopiada(f, c)}
+      editando={editando}
+      contenido={contenido}
+      align={align}
+      style={style}
+      className={className}
+      onSeleccionar={() => seleccionar(f, c)}
+      onEditar={() => {}}
+    />
+  )
+
+  /**
+   * Ctrl+Z / Ctrl+Y solo existen dentro del grid de COMPLETO.
+   *
+   * Fuera de él hay que BLOQUEAR el deshacer nativo del navegador: los campos
+   * de esta página (precios del día, tabla de turnos) se guardan en `onBlur`,
+   * así que un Ctrl+Z sobre uno de ellos revierte el texto sin que se note y el
+   * blur siguiente persiste el valor viejo. Un Ctrl+Z en el precio del DB5
+   * llegaba a reescribir el precio del producto.
+   *
+   * Dentro del grid: si se está editando una celda, el evento no llega aquí
+   * cancelado y el input usa su deshacer nativo, que ahí sí es visible.
+   */
+  function bloquearDeshacerFueraDelGrid(e: React.KeyboardEvent) {
+    if (!e.ctrlKey && !e.metaKey) return
+    const k = e.key.toLowerCase()
+    if (k !== 'z' && k !== 'y') return
+    const dentroDelGrid = gridRef.current?.contains(e.target as Node) ?? false
+    if (!dentroDelGrid) e.preventDefault()
+  }
+
   // Formateador especial para diferencia (con color rojo/verde)
   const renderDiferencia = (v: number | null) => {
     if (v === null) return <td className="text-right font-mono text-xs text-app-muted">—</td>
@@ -869,7 +1410,10 @@ export default function VentasPage() {
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-slate-50">
+    <div
+      className="flex h-full min-w-0 flex-1 flex-col overflow-hidden bg-slate-50"
+      onKeyDownCapture={bloquearDeshacerFueraDelGrid}
+    >
       
       {/* ── Top Header & Tab Selector ───────────────────────────── */}
       <div className="bg-white border-b border-app-border px-4 py-2 shadow-sm">
@@ -1110,7 +1654,7 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.total_consola}
                                 onChange={e => handleInputChange(t.id, 'total_consola', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'total_consola')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
                             </td>
@@ -1122,7 +1666,7 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.yape}
                                 onChange={e => handleInputChange(t.id, 'yape', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'yape')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
                             </td>
@@ -1134,7 +1678,7 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.openpay}
                                 onChange={e => handleInputChange(t.id, 'openpay', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'openpay')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
                             </td>
@@ -1146,7 +1690,7 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.deposito}
                                 onChange={e => handleInputChange(t.id, 'deposito', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'deposito')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
                             </td>
@@ -1158,7 +1702,7 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.dscto_vales}
                                 onChange={e => handleInputChange(t.id, 'dscto_vales', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'dscto_vales')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
                             </td>
@@ -1196,7 +1740,7 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.serafinado}
                                 onChange={e => handleInputChange(t.id, 'serafinado', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'serafinado')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
                             </td>
@@ -1208,9 +1752,31 @@ export default function VentasPage() {
                                 className={inputStyle}
                                 value={inputs.redondeo}
                                 onChange={e => handleInputChange(t.id, 'redondeo', e.target.value)}
-                                onBlur={() => handleShiftInputBlur(t.id, 'redondeo')}
+                                onBlur={() => handleShiftInputBlur(t.id)}
                                 placeholder="0.00"
                               />
+                              {(() => {
+                                const sug = redondeoSugeridoPorTurno[t.id] ?? 0
+                                const valor = (sug / 100).toFixed(2)
+                                if (sug === 0 || inputs.redondeo === valor) return null
+                                return (
+                                  <button
+                                    type="button"
+                                    className="mt-0.5 block w-full text-right text-[10px] text-amber-600 hover:underline"
+                                    title={
+                                      'Céntimos que la consola cobró de más o de menos frente a ' +
+                                      'galones × precio, sumados sobre los créditos de este turno ' +
+                                      'que se registraron en ABREVIADO. Clic para aplicarlo.'
+                                    }
+                                    onClick={() => {
+                                      handleInputChange(t.id, 'redondeo', valor)
+                                      handleShiftInputBlur(t.id, { redondeo: valor })
+                                    }}
+                                  >
+                                    sug. {sug > 0 ? '+' : ''}{valor}
+                                  </button>
+                                )
+                              })()}
                             </td>
                             {/* Efectivo Final */}
                             <td className="text-right font-mono text-xs font-semibold" style={{ background: 'var(--c-hl-cash-soft)' }}>
@@ -1222,49 +1788,10 @@ export default function VentasPage() {
                                 className="w-full bg-transparent border-0 py-0.5 text-xs focus:ring-1 focus:ring-primary focus:bg-white"
                                 value={inputs.colaborador_id}
                                 onChange={e => {
+                                  // Un <select> no dispara blur al elegir: se guarda en el acto,
+                                  // pasando el valor por `override` porque `inputsMap` aún no lo tiene.
                                   handleInputChange(t.id, 'colaborador_id', e.target.value)
-                                  // Forzar guardado inmediato al seleccionar colaborador
-                                  setTimeout(() => {
-                                    setInputsMap(prev => {
-                                      const updated = {
-                                        ...prev,
-                                        [t.id]: { ...prev[t.id], colaborador_id: e.target.value }
-                                      }
-                                      // Llamar al guardado con la referencia actualizada
-                                      const totalConsola = updated[t.id].total_consola === '' ? null : toCentimos(updated[t.id].total_consola)
-                                      const yape = toCentimos(updated[t.id].yape)
-                                      const openpay = toCentimos(updated[t.id].openpay)
-                                      const deposito = toCentimos(updated[t.id].deposito)
-                                      const dsctoVales = toCentimos(updated[t.id].dscto_vales)
-                                      const serafinado = toCentimos(updated[t.id].serafinado)
-                                      const redondeo = toCentimos(updated[t.id].redondeo)
-                                      const entregado = updated[t.id].entregado_grifero === '' ? null : toCentimos(updated[t.id].entregado_grifero)
-                                      const contabilizado = updated[t.id].contabilizado_admin === '' ? null : toCentimos(updated[t.id].contabilizado_admin)
-
-                                      const payload = {
-                                        fecha,
-                                        turno_id: t.id,
-                                        colaborador_id: e.target.value,
-                                        total_consola_centimos: totalConsola,
-                                        yape_centimos: yape,
-                                        openpay_centimos: openpay,
-                                        deposito_transferencia_centimos: deposito,
-                                        dscto_vales_centimos: dsctoVales,
-                                        serafinado_centimos: serafinado,
-                                        redondeo_centimos: redondeo,
-                                        entregado_grifero_centimos: entregado,
-                                        contabilizado_admin_centimos: contabilizado,
-                                      }
-                                      
-                                      const existingCierre = cierresMap[t.id]
-                                      if (existingCierre) {
-                                        supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id).then(() => loadDia(true))
-                                      } else {
-                                        supabase.from('cierres_caja').insert(payload).then(() => loadDia(true))
-                                      }
-                                      return updated
-                                    })
-                                  }, 0)
+                                  handleShiftInputBlur(t.id, { colaborador_id: e.target.value })
                                 }}
                               >
                                 <option value="">—</option>
@@ -1375,10 +1902,22 @@ export default function VentasPage() {
                         {registrosRapidos.length} registro{registrosRapidos.length > 1 ? 's' : ''} rápido{registrosRapidos.length > 1 ? 's' : ''} pendiente{registrosRapidos.length > 1 ? 's' : ''} de completar con el detalle del vale/factura (resaltado{registrosRapidos.length > 1 ? 's' : ''} abajo)
                       </div>
                     )}
+                    <p className="text-[11px] text-app-muted">
+                      Un clic selecciona la celda (Ctrl+C copia, Ctrl+V pega, Ctrl+Z deshace el
+                      último cambio); Enter, F2 o doble clic la abren para editar. Muévete con
+                      las flechas. En la fila azul, Enter sobre GALONES da de alta el registro.
+                    </p>
                     {/* table-fixed: la tabla de inserción mantiene ancho constante aunque
                         el contenido (nombres de cliente, montos) sea largo. */}
                     <div className="overflow-x-auto rounded border border-app-border bg-white shadow-sm">
-                    <table className="table-excel table-fixed" style={{ minWidth: 1200 }}>
+                    <table
+                      ref={gridRef}
+                      className="table-excel table-fixed"
+                      style={{ minWidth: 1200 }}
+                      onKeyDown={onGridKeyDown}
+                      onCopy={onGridCopy}
+                      onPaste={onGridPaste}
+                    >
                       <thead>
                         <tr>
                           <th style={{ width: 86 }}>FECHA</th>
@@ -1399,122 +1938,73 @@ export default function VentasPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {/* Fila de Entrada Rápida */}
+                        {/* Fila de Entrada Rápida (f = 0) */}
                         <tr style={{ background: 'var(--c-hl-info)' }}>
                           <td className="text-xs text-app-muted">{fecha}</td>
-                          <td>
-                            <Combobox
-                              id="venta-nuevo-cliente"
-                              className="input py-0 h-6 text-xs w-full"
-                              options={empresaOptions}
-                              value={nuevo.empresa_id}
-                              onChange={(val) => {
-                                const next = { ...nuevo, empresa_id: val }
-                                if (val) {
-                                  const emp = empresas.find(x => x.id === val)
-                                  if (emp) next.tipo_atencion = emp.tipo
-                                }
-                                setNuevo(next)
-                              }}
-                              placeholder="Cliente…"
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input py-0 h-6 text-xs w-full"
-                              placeholder="Nº vale"
-                              value={nuevo.numero}
-                              onChange={e => setNuevo({ ...nuevo, numero: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input py-0 h-6 text-xs w-full"
-                              placeholder="Serie"
-                              value={nuevo.serie}
-                              onChange={e => setNuevo({ ...nuevo, serie: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input py-0 h-6 text-xs w-full"
-                              placeholder="Placa"
-                              value={nuevo.placa}
-                              onChange={e => setNuevo({ ...nuevo, placa: e.target.value })}
-                              style={{ textTransform: 'uppercase' }}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input py-0 h-6 text-xs w-full"
-                              placeholder="Conductor"
-                              value={nuevo.conductor}
-                              onChange={e => setNuevo({ ...nuevo, conductor: e.target.value })}
-                            />
-                          </td>
-                          <td>
-                            <input
-                              className="input py-0 h-6 text-xs w-full"
-                              placeholder="DNI"
-                              value={nuevo.dni_conductor}
-                              onChange={e => setNuevo({ ...nuevo, dni_conductor: e.target.value })}
-                              maxLength={8}
-                            />
-                          </td>
-                          <td>
-                            <select
-                              className="input py-0 h-6 text-xs w-full"
-                              value={nuevo.turno_id}
-                              onChange={e => setNuevo({ ...nuevo, turno_id: e.target.value })}
-                              onKeyDown={e => {
-                                const id = turnoIdPorTecla(e.key)
-                                if (id) { e.preventDefault(); setNuevo(p => ({ ...p, turno_id: id })) }
-                              }}
-                            >
-                              {turnos.map((t, i) => (
-                                <option key={t.id} value={String(t.id)}>{i + 1}</option>
-                              ))}
-                            </select>
-                          </td>
-                          <td>
-                            <select
-                              className="input py-0 h-6 text-xs w-full"
-                              value={nuevo.tipo_combustible}
-                              onChange={e => setNuevo({ ...nuevo, tipo_combustible: e.target.value })}
-                              onKeyDown={e => {
-                                const code = combustibleCodigoPorTecla(e.key)
-                                if (code) { e.preventDefault(); setNuevo(p => ({ ...p, tipo_combustible: code })) }
-                              }}
-                            >
-                              <option value="">—</option>
-                              {combustibles.map(c => (
-                                <option key={c.codigo} value={c.codigo}>{c.codigo}</option>
-                              ))}
-                            </select>
-                          </td>
-                          <td>
-                            <input
-                              type="number"
-                              step="0.001"
-                              min="0"
-                              className="input py-0 h-6 text-xs w-full text-right font-mono"
-                              placeholder="0.000"
-                              value={nuevo.cantidad_galones}
-                              onChange={e => setNuevo({ ...nuevo, cantidad_galones: e.target.value })}
-                              onKeyDown={e => {
-                                const gal = parseFloat(nuevo.cantidad_galones)
-                                if (e.key === 'Enter' && nuevo.tipo_combustible && gal > 0 && !savingReg) {
-                                  saveRegistro()
-                                }
-                              }}
-                            />
-                          </td>
-                          <td className="text-right font-mono text-xs font-medium text-primary-text">
-                            {parseFloat(nuevo.cantidad_galones) > 0 && nuevo.tipo_combustible
+
+                          <CeldaGrid
+                            f={FILA_NUEVA} c={1}
+                            activa={esActiva(FILA_NUEVA, 1)}
+                            tabbable={esTabbable(FILA_NUEVA, 1)}
+                            copiada={esCopiada(FILA_NUEVA, 1)}
+                            editando={editando}
+                            editable
+                            caret="ninguno"
+                            contenido={empresaOptions.find(o => o.value === nuevo.empresa_id)?.label}
+                            onSeleccionar={() => seleccionar(FILA_NUEVA, 1)}
+                            onEditar={() => editarCelda(FILA_NUEVA, 1)}
+                            editor={
+                              <Combobox
+                                className={CLASE_EDITOR}
+                                options={empresaOptions}
+                                value={nuevo.empresa_id}
+                                onChange={(val) => {
+                                  const next = { ...nuevo, empresa_id: val }
+                                  if (val) {
+                                    const emp = empresas.find(x => x.id === val)
+                                    if (emp) next.tipo_atencion = emp.tipo
+                                  }
+                                  setNuevo(next)
+                                }}
+                                onCommit={() => setEditando(false)}
+                                // Vales seguidos suelen ser del mismo cliente: se propone
+                                // el anterior en tenue y se acepta con Enter o Tab.
+                                sugerencia={clienteSugerido}
+                                abrirAlEnfocar={false}
+                                placeholder="Cliente…"
+                              />
+                            }
+                          />
+
+                          {celdaInput(FILA_NUEVA, 2, nuevo.numero, v => setNuevo(p => ({ ...p, numero: v })), { placeholder: 'Nº vale' })}
+                          {celdaInput(FILA_NUEVA, 3, nuevo.serie, v => setNuevo(p => ({ ...p, serie: v })), { placeholder: 'Serie' })}
+                          {celdaInput(FILA_NUEVA, 4, nuevo.placa, v => setNuevo(p => ({ ...p, placa: v })), { placeholder: 'Placa', mayusculas: true })}
+                          {celdaInput(FILA_NUEVA, 5, nuevo.conductor, v => setNuevo(p => ({ ...p, conductor: v })), { placeholder: 'Conductor' })}
+                          {celdaInput(FILA_NUEVA, 6, nuevo.dni_conductor, v => setNuevo(p => ({ ...p, dni_conductor: v })), { placeholder: 'DNI', maxLength: 8 })}
+
+                          {celdaSelect(
+                            FILA_NUEVA, 7, nuevo.turno_id,
+                            turnoOptions.find(o => o.value === nuevo.turno_id)?.label ?? '',
+                            v => setNuevo(p => ({ ...p, turno_id: v })),
+                            turnoOptions, turnoIdPorTecla
+                          )}
+                          {celdaSelect(
+                            FILA_NUEVA, 8, nuevo.tipo_combustible, nuevo.tipo_combustible,
+                            v => setNuevo(p => ({ ...p, tipo_combustible: v })),
+                            combustibles.map(c => ({ value: c.codigo, label: c.codigo })),
+                            combustibleCodigoPorTecla, true
+                          )}
+                          {celdaInput(FILA_NUEVA, 9, nuevo.cantidad_galones, v => setNuevo(p => ({ ...p, cantidad_galones: v })), { numero: true, step: '0.001', placeholder: '0.000' })}
+
+                          {celdaLectura(
+                            FILA_NUEVA, 10,
+                            parseFloat(nuevo.cantidad_galones) > 0 && nuevo.tipo_combustible
                               ? fs(Math.round(parseFloat(nuevo.cantidad_galones) * precioDiario(nuevo.tipo_combustible)))
-                              : '—'}
-                          </td>
-                          <td className="text-center" style={{ background: 'var(--c-hl-warn)' }}>—</td>
+                              : '—',
+                            'right', undefined, 'font-mono font-medium text-primary-text'
+                          )}
+                          {celdaLectura(FILA_NUEVA, 11, '—', 'center', { background: 'var(--c-hl-warn)' })}
+
                           <td>
                             <button
                               className="btn-primary h-6 w-full py-0 text-xs"
@@ -1527,161 +2017,110 @@ export default function VentasPage() {
                         </tr>
 
                         {/* Registros guardados — editables en línea, sin botón "Editar" */}
-                        {registros.map(r => {
+                        {registros.map((r, i) => {
                           const inputs = regInputsMap[r.id]
                           if (!inputs) return null
 
-                          const precioRef = precioDiario(r.tipo_combustible)
-                          const variacion = Math.round((precioRef - r.precio_unit_centimos) * r.cantidad_galones)
-                          const cellStyle = "input py-0 h-6 text-xs w-full bg-transparent border-0 focus:ring-1 focus:ring-primary focus:bg-white"
+                          const f = i + 1
                           const galonesEditados = parseFloat(inputs.cantidad_galones) || 0
+                          const precioFila = precioDeFila(r, inputs.tipo_combustible)
+
+                          // VARIACIÓN = lo que esta fila aporta al REDONDEO del turno: la brecha
+                          // entre lo que le cobramos al cliente de crédito (galones × precio de
+                          // 2 decimales) y lo que marcó la consola (que usa más decimales).
+                          // `—` cuando la venta nació en COMPLETO: sin total declarado no hay
+                          // referencia. No depende del precio del día para las filas ya cerradas.
+                          const declarado = r.importe_declarado_centimos
+                          const importeActual =
+                            galonesEditados > 0
+                              ? Math.round(galonesEditados * precioFila)
+                              : toCentimos(inputs.importe)
+                          const variacion = declarado == null ? null : importeActual - declarado
 
                           return (
                             <tr key={r.id} className={r.cantidad_galones === 0 ? 'bg-amber-50/60' : undefined}>
                               <td className="text-xs text-app-muted">{fecha}</td>
+
                               {/* Cliente */}
-                              <td>
-                                <Combobox
-                                  className={cellStyle}
-                                  options={empresaOptions}
-                                  value={inputs.empresa_id}
-                                  onChange={val => handleRegInputChange(r.id, 'empresa_id', val)}
-                                  onCommit={val => handleRegBlur(r.id, { empresa_id: val })}
-                                  placeholder="Cliente…"
-                                />
-                              </td>
-                              {/* Vale Lic. / Número */}
-                              <td>
-                                <input
-                                  className={cellStyle}
-                                  value={inputs.numero}
-                                  onChange={e => handleRegInputChange(r.id, 'numero', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                />
-                              </td>
-                              {/* Ticket / Serie */}
-                              <td>
-                                <input
-                                  className={cellStyle}
-                                  value={inputs.serie}
-                                  onChange={e => handleRegInputChange(r.id, 'serie', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                />
-                              </td>
-                              {/* Placa */}
-                              <td>
-                                <input
-                                  className={cellStyle}
-                                  value={inputs.placa}
-                                  onChange={e => handleRegInputChange(r.id, 'placa', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                  style={{ textTransform: 'uppercase' }}
-                                />
-                              </td>
-                              {/* Conductor */}
-                              <td>
-                                <input
-                                  className={cellStyle}
-                                  value={inputs.conductor}
-                                  onChange={e => handleRegInputChange(r.id, 'conductor', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                />
-                              </td>
-                              {/* DNI */}
-                              <td>
-                                <input
-                                  className={cellStyle}
-                                  value={inputs.dni_conductor}
-                                  onChange={e => handleRegInputChange(r.id, 'dni_conductor', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                  maxLength={8}
-                                />
-                              </td>
-                              {/* Turno */}
-                              <td>
-                                <select
-                                  className={cellStyle}
-                                  value={inputs.turno_id}
-                                  onChange={e => handleRegInputChange(r.id, 'turno_id', e.target.value)}
-                                  onKeyDown={e => {
-                                    const id = turnoIdPorTecla(e.key)
-                                    if (id) { e.preventDefault(); handleRegInputChange(r.id, 'turno_id', id) }
-                                  }}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                >
-                                  {turnos.map((t, i) => (
-                                    <option key={t.id} value={String(t.id)}>{i + 1}</option>
-                                  ))}
-                                </select>
-                              </td>
-                              {/* Producto */}
-                              <td>
-                                <select
-                                  className={cellStyle}
-                                  value={inputs.tipo_combustible}
-                                  onChange={e => handleRegInputChange(r.id, 'tipo_combustible', e.target.value)}
-                                  onKeyDown={e => {
-                                    const code = combustibleCodigoPorTecla(e.key)
-                                    if (code) { e.preventDefault(); handleRegInputChange(r.id, 'tipo_combustible', code) }
-                                  }}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                >
-                                  {r.cantidad_galones === 0 && <option value="">—</option>}
-                                  {combustibles.map(comb => (
-                                    <option key={comb.codigo} value={comb.codigo}>{comb.codigo}</option>
-                                  ))}
-                                </select>
-                              </td>
-                              {/* Galones */}
-                              <td>
-                                <input
-                                  type="number"
-                                  step="0.001"
-                                  className={`${cellStyle} text-right font-mono`}
-                                  value={inputs.cantidad_galones}
-                                  onChange={e => handleRegInputChange(r.id, 'cantidad_galones', e.target.value)}
-                                  onBlur={() => handleRegBlur(r.id)}
-                                />
-                              </td>
-                              {/* Importe (Editable solo si galones = 0, sino calculado) */}
-                              <td>
-                                {galonesEditados === 0 ? (
-                                  <input
-                                    type="number"
-                                    step="0.01"
-                                    className={`${cellStyle} text-right font-mono`}
-                                    value={inputs.importe}
-                                    onChange={e => handleRegInputChange(r.id, 'importe', e.target.value)}
-                                    onBlur={() => handleRegBlur(r.id)}
+                              <CeldaGrid
+                                f={f} c={1}
+                                activa={esActiva(f, 1)}
+                                tabbable={esTabbable(f, 1)}
+                                copiada={esCopiada(f, 1)}
+                                editando={editando}
+                                editable
+                                caret="ninguno"
+                                contenido={empresaOptions.find(o => o.value === inputs.empresa_id)?.label}
+                                onSeleccionar={() => seleccionar(f, 1)}
+                                onEditar={() => editarCelda(f, 1)}
+                                editor={
+                                  <Combobox
+                                    className={CLASE_EDITOR}
+                                    options={empresaOptions}
+                                    value={inputs.empresa_id}
+                                    onChange={val => handleRegInputChange(r.id, 'empresa_id', val)}
+                                    onCommit={val => { guardarCelda(f, 1, val); setEditando(false) }}
+                                    placeholder="Cliente…"
                                   />
-                                ) : (
+                                }
+                              />
+
+                              {celdaInput(f, 2, inputs.numero, v => handleRegInputChange(r.id, 'numero', v))}
+                              {celdaInput(f, 3, inputs.serie, v => handleRegInputChange(r.id, 'serie', v))}
+                              {celdaInput(f, 4, inputs.placa, v => handleRegInputChange(r.id, 'placa', v), { mayusculas: true })}
+                              {celdaInput(f, 5, inputs.conductor, v => handleRegInputChange(r.id, 'conductor', v))}
+                              {celdaInput(f, 6, inputs.dni_conductor, v => handleRegInputChange(r.id, 'dni_conductor', v), { maxLength: 8 })}
+
+                              {celdaSelect(
+                                f, 7, inputs.turno_id,
+                                turnoOptions.find(o => o.value === inputs.turno_id)?.label ?? '',
+                                v => handleRegInputChange(r.id, 'turno_id', v),
+                                turnoOptions, turnoIdPorTecla
+                              )}
+                              {celdaSelect(
+                                f, 8, inputs.tipo_combustible, inputs.tipo_combustible,
+                                v => handleRegInputChange(r.id, 'tipo_combustible', v),
+                                combustibles.map(c => ({ value: c.codigo, label: c.codigo })),
+                                combustibleCodigoPorTecla, r.cantidad_galones === 0
+                              )}
+                              {celdaInput(f, 9, inputs.cantidad_galones, v => handleRegInputChange(r.id, 'cantidad_galones', v), { numero: true, step: '0.001' })}
+
+                              {/* PRECIO TOTAL: se escribe a mano solo en créditos rápidos (sin galones) */}
+                              {galonesEditados === 0 ? (
+                                celdaInput(f, 10, inputs.importe, v => handleRegInputChange(r.id, 'importe', v), { numero: true, step: '0.01' })
+                              ) : (
+                                celdaLectura(
+                                  f, 10,
                                   <>
-                                    <span className="block text-right font-mono text-xs font-medium px-2 text-slate-700">
-                                      {fs(Math.round(galonesEditados * precioDiario(inputs.tipo_combustible)))}
+                                    <span className="block text-right font-mono text-xs font-medium text-slate-700">
+                                      {fs(Math.round(galonesEditados * precioFila))}
                                     </span>
-                                    {r.cantidad_galones === 0 && (() => {
-                                      const computado = Math.round(galonesEditados * precioDiario(inputs.tipo_combustible))
-                                      const diff = computado - r.importe_centimos
-                                      // Tolerancia de redondeo normal (galones con 3 decimales × precio con 2)
-                                      if (Math.abs(diff) <= 5) return null
-                                      return (
-                                        <span className="block text-right text-[10px] text-amber-600 px-2">
-                                          rápido: {fs(r.importe_centimos)} ({diff > 0 ? '+' : ''}{fs(diff)})
-                                        </span>
-                                      )
-                                    })()}
+                                    {/* Total de consola declarado en ABREVIADO; la brecha va en VARIACIÓN. */}
+                                    {declarado != null && declarado !== importeActual && (
+                                      <span className="block text-right text-[10px] text-amber-600">
+                                        consola: {fs(declarado)}
+                                      </span>
+                                    )}
                                   </>
-                                )}
-                              </td>
-                              <td
-                                className="text-right font-mono text-xs font-semibold"
-                                style={{
+                                )
+                              )}
+
+                              {celdaLectura(
+                                f, 11,
+                                variacion === null
+                                  ? '—'
+                                  : `${variacion > 0 ? '+' : variacion < 0 ? '-' : ''}${fs(Math.abs(variacion))}`,
+                                'right',
+                                {
                                   background: 'var(--c-hl-warn)',
-                                  color: variacion > 0 ? 'var(--c-pos-fg)' : variacion < 0 ? 'var(--c-neg-fg)' : 'var(--c-hl-warn-fg)',
-                                }}
-                              >
-                                {r.cantidad_galones > 0 ? fs(Math.abs(variacion)) : '—'}
-                              </td>
+                                  color:
+                                    variacion && variacion > 0 ? 'var(--c-pos-fg)'
+                                    : variacion && variacion < 0 ? 'var(--c-neg-fg)'
+                                    : 'var(--c-hl-warn-fg)',
+                                },
+                                'font-mono font-semibold'
+                              )}
+
                               <td className="text-center">
                                 <button
                                   onClick={() => deleteRegistro(r.id)}
