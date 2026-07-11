@@ -216,8 +216,18 @@ export interface OsinergminSnapshot {
   id: string
   fecha_consulta: string
   fecha_datos_excel: string
+  // La zona son los TRES: hay distritos homónimos (MIRAFLORES está en Arequipa
+  // y en Lima). Null en snapshots anteriores a la migración 015.
+  departamento: string | null
+  provincia: string | null
   distrito: string
+  // Establecimientos de la zona (cualquier producto).
   total_establecimientos: number
+  // Establecimientos que venden ESE producto = el "de N" del puesto. Null en
+  // snapshots anteriores a la migración 015.
+  total_db5: number | null
+  total_regular: number | null
+  total_premium: number | null
   ranking_db5: number | null
   precio_db5_centimos: number | null
   ranking_regular: number | null
@@ -234,6 +244,8 @@ export interface OsinergminTop10 {
   ranking: number
   razon_social: string
   direccion: string
+  /** CODIGO_OSINERG: identifica al establecimiento (un RUC puede tener varios). */
+  codigo_osinerg: string | null
   precio_centimos: number
   es_nuestro: boolean
 }

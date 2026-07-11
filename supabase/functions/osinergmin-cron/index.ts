@@ -3,13 +3,29 @@
 // ============================================================
 // Descarga el Excel de OSINERGMIN, lo parsea EN EL SERVIDOR con un lector
 // liviano (fflate + lectura directa del XML, SIN SheetJS) para caber en los
-// límites del edge (256MB/CPU), calcula el ranking del distrito y guarda el
+// límites del edge (256MB/CPU), calcula el ranking de la zona y guarda el
 // snapshot + top10. Pensada para el cron horario (pg_cron), pero también la
 // puede disparar el superadmin para probar.
 //
-// Ranking: precio ascendente; si dos grifos EMPATAN en precio, va primero el
-// que registró su precio antes (columna FECHA_* del Excel). El puesto es la
-// posición real en esa lista desempatada.
+// REGLAS DEL RANKING (deben reflejar lo que publica OSINERGMIN en facilito):
+//
+//  · ZONA = DEPARTAMENTO + PROVINCIA + DISTRITO. El distrito NO basta: hay 36
+//    nombres de distrito repetidos en el país (MIRAFLORES está en Arequipa y
+//    en Lima). Filtrar solo por distrito mezclaba grifos de otra ciudad.
+//  · La unidad que compite es el ESTABLECIMIENTO (CODIGO_OSINERG), NO el RUC:
+//    una empresa puede tener varios grifos en el mismo distrito (COESTI tiene
+//    2 en Miraflores) y OSINERGMIN los lista por separado. Agrupar por RUC
+//    borraba competidores y descuadraba todos los puestos siguientes.
+//  · Orden: precio ascendente. Empate → primero el que registró su precio
+//    antes (FCHA_REGISTRO). Segundo empate → CODIGO_OSINERG, para que el orden
+//    sea DETERMINISTA y no dependa de cómo venga ordenado el Excel.
+//
+// Los nombres de columna se resuelven contra una lista de alias normalizada
+// (sin tildes, sin guiones bajos). Si falta una columna obligatoria la función
+// ABORTA con un error explícito, y si falta una opcional lo devuelve en
+// `avisos`: un cambio de cabecera de OSINERGMIN nunca debe degradar el ranking
+// en silencio (así se coló durante meses el desempate roto: el Excel llama a
+// la columna FCHA_REGISTRO —sin la "E"— y el código buscaba FECHA_REGISTRO).
 //
 // Se salta la escritura si el ranking/precio no cambió respecto al último
 // snapshot (evita ensuciar el historial con 24 filas idénticas al día).
@@ -36,6 +52,34 @@ const CORS = {
 }
 const jsonHeaders = { ...CORS, 'Content-Type': 'application/json' }
 const toCentimos = (p: number) => (isNaN(p) ? 0 : Math.round(p * 100))
+
+// Nombre de columna → forma canónica: solo A–Z y 0–9. NFD separa la tilde de
+// su letra y el filtro se la lleva, así que 'PROVINCIA', 'Província' y
+// 'PROVINCIA ' colapsan al mismo alias y una cabecera nueva de OSINERGMIN no
+// rompe el parseo por un guion bajo o un acento de más.
+const canon = (s: string) =>
+  s.normalize('NFD').toUpperCase().replace(/[^A-Z0-9]/g, '')
+
+// Columnas que necesita el ranking. `alias` va en orden de preferencia; la
+// primera que exista en el Excel gana. `req`: sin ella el ranking sería FALSO
+// (no incompleto), así que la función aborta en vez de publicar un ranking malo.
+const COLUMNAS = {
+  ruc:          { req: true,  alias: ['RUC'] },
+  departamento: { req: true,  alias: ['DEPARTAMENTO'] },
+  provincia:    { req: true,  alias: ['PROVINCIA'] },
+  distrito:     { req: true,  alias: ['DISTRITO'] },
+  producto:     { req: true,  alias: ['PRODUCTO'] },
+  precio:       { req: true,  alias: ['PRECIO_VENTA', 'PRECIO'] },
+  // Identifica al ESTABLECIMIENTO (dos grifos de un mismo RUC en el distrito).
+  codigo:       { req: false, alias: ['CODIGO_OSINERG', 'CODIGO_OSINERGMIN', 'NRO_REGISTRO'] },
+  razon:        { req: false, alias: ['RAZON', 'RAZON_SOCIAL'] },
+  direccion:    { req: false, alias: ['DIRECCION'] },
+  // OJO: en el Excel real es FCHA_REGISTRO (sin la "E"). Solo desempata.
+  fecha:        { req: false, alias: ['FCHA_REGISTRO', 'FECHA_REGISTRO', 'FECHA_HORA', 'FECHA_PRECIO', 'FECHA_ACTUALIZACION', 'FECHA'] },
+  activo:       { req: false, alias: ['PRODUCTO_ACTIVO'] },
+} as const
+
+type Campo = keyof typeof COLUMNAS
 
 // ── Parser liviano del .xlsx (validado contra SheetJS) ────────
 // Memoria acotada: resuelve la cabecera primero y en las filas de datos guarda
@@ -79,12 +123,17 @@ function parseXlsx(u8: Uint8Array, needed: string[]) {
   const sheetXml = strFromU8(files['xl/worksheets/sheet1.xml'])
   const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g
 
-  // Cabecera (fila 1): nombre de columna → letra
+  // Cabecera (fila 1): nombre CANÓNICO de columna → letra
   const first = rowRe.exec(sheetXml)
   const letraDe: Record<string, string> = {}
+  const cabecera: string[] = []
   if (first) {
     const head = parseCells(first[1])
-    for (const [letra, name] of Object.entries(head)) letraDe[decode(name).trim()] = letra
+    for (const [letra, name] of Object.entries(head)) {
+      const bruto = decode(name).trim()
+      cabecera.push(bruto)
+      letraDe[canon(bruto)] = letra
+    }
   }
   const keep = new Set(needed.map((n) => letraDe[n]).filter(Boolean))
 
@@ -93,7 +142,7 @@ function parseXlsx(u8: Uint8Array, needed: string[]) {
   let rm: RegExpExecArray | null
   while ((rm = rowRe.exec(sheetXml))) rows.push(parseCells(rm[1], keep))
 
-  return { rows, letraDe, decode }
+  return { rows, letraDe, cabecera, decode }
 }
 
 async function run(): Promise<{ status: number; body: unknown }> {
@@ -123,24 +172,37 @@ async function run(): Promise<{ status: number; body: unknown }> {
   })
   if (!resp.ok) return { status: 502, body: { error: `No se pudo descargar el Excel (HTTP ${resp.status})` } }
 
-  // FECHA_*: fecha en que el grifo registró su precio. Se usa SOLO para
-  // desempatar el ranking (a igual precio, gana el que lo publicó primero).
-  // El nombre de la columna varía según la descarga, por eso hay candidatas.
-  const FECHA_CANDIDATAS = ['FECHA_HORA', 'FECHA_PRECIO', 'FECHA_REGISTRO', 'FECHA_ACTUALIZACION', 'FECHA']
-  const NEEDED = ['RUC', 'RAZON', 'DISTRITO', 'DIRECCION', 'PRODUCTO', 'PRECIO_VENTA', ...FECHA_CANDIDATAS]
-  const { rows, letraDe, decode } = parseXlsx(new Uint8Array(await resp.arrayBuffer()), NEEDED)
-  const cRUC = letraDe['RUC'], cRAZON = letraDe['RAZON'], cDIST = letraDe['DISTRITO']
-  const cDIR = letraDe['DIRECCION'], cPROD = letraDe['PRODUCTO'], cPRECIO = letraDe['PRECIO_VENTA']
-  const cFECHA = FECHA_CANDIDATAS.map((n) => letraDe[n]).find(Boolean)
-  if (!cRUC || !cDIST || !cPROD || !cPRECIO) {
-    return { status: 422, body: { error: 'El Excel no tiene las columnas esperadas.' } }
+  // ── Resolución de columnas por alias canónico ──
+  const alias = Object.values(COLUMNAS).flatMap((c) => c.alias.map(canon))
+  const { rows, letraDe, cabecera, decode } = parseXlsx(new Uint8Array(await resp.arrayBuffer()), alias)
+
+  const avisos: string[] = []
+  const col = {} as Record<Campo, string | undefined>
+  const faltan: string[] = []
+  for (const [campo, def] of Object.entries(COLUMNAS) as [Campo, typeof COLUMNAS[Campo]][]) {
+    col[campo] = def.alias.map((a) => letraDe[canon(a)]).find(Boolean)
+    if (col[campo]) continue
+    if (def.req) faltan.push(`${campo} (${def.alias.join(' | ')})`)
+    else avisos.push(`No se encontró la columna "${campo}" (${def.alias.join(' | ')}) en el Excel.`)
+  }
+  if (faltan.length > 0) {
+    return {
+      status: 422,
+      body: {
+        error: `El Excel cambió de formato: faltan columnas obligatorias → ${faltan.join(', ')}.`,
+        cabecera_recibida: cabecera,
+      },
+    }
   }
 
   const norm = (v: string | undefined) => decode(v ?? '').trim()
+  const val = (fila: Record<string, string>, campo: Campo) => {
+    const c = col[campo]
+    return c ? norm(fila[c]) : ''
+  }
   // Clave ordenable de la fecha de registro: acepta el serial numérico de Excel
   // o texto "dd/mm/yyyy [hh:mm[:ss]]". Sin fecha → Infinity (pierde el empate).
-  const fechaClave = (raw: string | undefined): number => {
-    const s = norm(raw)
+  const fechaClave = (s: string): number => {
     if (!s) return Infinity
     const n = Number(s)
     if (!isNaN(n) && n > 0) return n
@@ -149,62 +211,97 @@ async function run(): Promise<{ status: number; body: unknown }> {
     const t = Date.parse(s)
     return isNaN(t) ? Infinity : t
   }
-  // Distrito de nuestro grifo (rows = solo filas de datos, sin cabecera)
-  let distrito = ''
-  for (let i = 0; i < rows.length; i++) {
-    if (norm(rows[i][cRUC]) === ruc) { distrito = norm(rows[i][cDIST]); break }
-  }
-  if (!distrito) return { status: 404, body: { error: `No se encontró el RUC ${ruc} en el Excel.` } }
 
-  type Reg = { ruc: string; producto: string; precio: number; fecha: number }
-  const enDistrito: Reg[] = []
-  const rucsDistrito = new Set<string>()
-  const infoPorRuc = new Map<string, { razon: string; direccion: string }>()
-  for (let i = 0; i < rows.length; i++) {
-    if (norm(rows[i][cDIST]) !== distrito) continue
-    const rr = norm(rows[i][cRUC])
-    rucsDistrito.add(rr)
-    if (!infoPorRuc.has(rr)) {
-      infoPorRuc.set(rr, { razon: norm(rows[i][cRAZON]), direccion: cDIR ? norm(rows[i][cDIR]) : '' })
-    }
-    enDistrito.push({
-      ruc: rr,
-      producto: norm(rows[i][cPROD]).toUpperCase(),
-      precio: Number(rows[i][cPRECIO]) || 0,
-      fecha: cFECHA ? fechaClave(rows[i][cFECHA]) : Infinity,
+  // ── Zona de nuestro grifo: DEPARTAMENTO + PROVINCIA + DISTRITO ──
+  // Con el distrito solo, 'MIRAFLORES' arrastraba también los grifos de Lima.
+  const nuestras = rows.filter((f) => val(f, 'ruc') === ruc)
+  if (nuestras.length === 0) {
+    return { status: 404, body: { error: `No se encontró el RUC ${ruc} en el Excel.` } }
+  }
+  const zona = {
+    departamento: val(nuestras[0], 'departamento'),
+    provincia: val(nuestras[0], 'provincia'),
+    distrito: val(nuestras[0], 'distrito'),
+  }
+  // Si el RUC tuviera grifos en varias zonas, cuál se rankea dependería del
+  // orden del Excel. Se rankea la primera, pero avisando (no en silencio).
+  const zonasDelRuc = new Set(
+    nuestras.map((f) => `${val(f, 'departamento')}|${val(f, 'provincia')}|${val(f, 'distrito')}`),
+  )
+  if (zonasDelRuc.size > 1) {
+    avisos.push(
+      `El RUC ${ruc} tiene grifos en ${zonasDelRuc.size} zonas; se rankea ${zona.distrito}, ${zona.provincia}.`,
+    )
+  }
+  const mismaZona = (f: Record<string, string>) =>
+    canon(val(f, 'departamento')) === canon(zona.departamento) &&
+    canon(val(f, 'provincia')) === canon(zona.provincia) &&
+    canon(val(f, 'distrito')) === canon(zona.distrito)
+
+  // Clave del ESTABLECIMIENTO (lo que compite en el ranking). Sin
+  // CODIGO_OSINERG, RUC+dirección sigue separando dos grifos de una misma
+  // empresa; solo si tampoco hay dirección se cae a agrupar por RUC.
+  const claveEst = (f: Record<string, string>) =>
+    val(f, 'codigo') || `${val(f, 'ruc')}|${val(f, 'direccion')}`
+
+  type Reg = {
+    key: string; ruc: string; razon: string; direccion: string
+    producto: string; precio: number; fecha: number
+  }
+  const enZona: Reg[] = []
+  const establecimientosZona = new Set<string>()
+  for (const f of rows) {
+    if (!mismaZona(f)) continue
+    establecimientosZona.add(claveEst(f))
+    // PRODUCTO_ACTIVO = 'NO' → OSINERGMIN no lo lista como oferta vigente.
+    if (val(f, 'activo').toUpperCase() === 'NO') continue
+    enZona.push({
+      key: claveEst(f),
+      ruc: val(f, 'ruc'),
+      razon: val(f, 'razon'),
+      direccion: val(f, 'direccion'),
+      producto: val(f, 'producto').toUpperCase(),
+      precio: Number(val(f, 'precio')) || 0,
+      fecha: fechaClave(val(f, 'fecha')),
     })
   }
 
   const snapshot: Record<string, number | null> = {
-    ranking_db5: null, precio_db5_centimos: null,
-    ranking_regular: null, precio_regular_centimos: null,
-    ranking_premium: null, precio_premium_centimos: null,
+    ranking_db5: null, precio_db5_centimos: null, total_db5: null,
+    ranking_regular: null, precio_regular_centimos: null, total_regular: null,
+    ranking_premium: null, precio_premium_centimos: null, total_premium: null,
   }
   const top10: {
-    producto: string; ranking: number; razon_social: string
-    direccion: string; precio_centimos: number; es_nuestro: boolean
+    producto: string; ranking: number; razon_social: string; direccion: string
+    codigo_osinerg: string; precio_centimos: number; es_nuestro: boolean
   }[] = []
 
   for (const p of productos) {
-    const items = enDistrito.filter((r) => r.producto === p.nombreExcel && r.precio > 0)
-    // Precio mínimo por RUC; a igual precio se conserva la fecha más antigua
-    // (la que le da la preferencia en el desempate).
-    const byRuc = new Map<string, { precio: number; fecha: number }>()
+    const items = enZona.filter((r) => r.producto === p.nombreExcel && r.precio > 0)
+    // Un establecimiento aporta UNA fila por producto (su último precio). Si el
+    // Excel repitiera el establecimiento, se queda la fecha MÁS RECIENTE: es su
+    // precio vigente, no el más barato que llegó a tener.
+    const porEst = new Map<string, Reg>()
     for (const it of items) {
-      const prev = byRuc.get(it.ruc)
-      if (!prev || it.precio < prev.precio || (it.precio === prev.precio && it.fecha < prev.fecha)) {
-        byRuc.set(it.ruc, { precio: it.precio, fecha: it.fecha })
-      }
+      const prev = porEst.get(it.key)
+      if (!prev || it.fecha > prev.fecha) porEst.set(it.key, it)
     }
-    // Orden del ranking: precio ascendente; EMPATE → primero el que registró
-    // su precio antes (fecha más antigua). Sin fecha, se respeta el orden del
-    // Excel (sort estable).
-    const lista = [...byRuc.entries()]
-      .map(([r, v]) => ({ ruc: r, precio: v.precio, fecha: v.fecha }))
-      .sort((a, b) => a.precio - b.precio || (a.fecha === b.fecha ? 0 : a.fecha - b.fecha))
+    // Orden: precio asc → registró antes → CODIGO_OSINERG. El último criterio
+    // hace el ranking DETERMINISTA: sin él, los empates quedaban al azar del
+    // orden del Excel y el puesto bailaba entre una corrida y la siguiente.
+    const lista = [...porEst.values()].sort(
+      (a, b) => a.precio - b.precio || a.fecha - b.fecha || a.key.localeCompare(b.key),
+    )
     if (lista.length === 0) continue
-    // Ranking = posición real en la lista desempatada (consistente con el Top 10).
+
+    // "Nosotros" = todos los establecimientos de nuestro RUC en la zona (si el
+    // grifo abre un segundo local, aparecen los dos resaltados). El puesto del
+    // snapshot es el MEJOR de ellos.
     const ourIdx = lista.findIndex((x) => x.ruc === ruc)
+    const total = lista.length
+    if (p.codigo === 'DB5') snapshot.total_db5 = total
+    if (p.codigo === 'REGULAR') snapshot.total_regular = total
+    if (p.codigo === 'PREMIUM') snapshot.total_premium = total
     if (ourIdx >= 0) {
       const nuestro = lista[ourIdx]
       const rk = ourIdx + 1
@@ -216,10 +313,9 @@ async function run(): Promise<{ status: number; body: unknown }> {
     // nuestra posición (para que siempre aparezcamos).
     const hasta = ourIdx >= 10 ? ourIdx + 1 : 10
     lista.slice(0, hasta).forEach((x, i) => {
-      const info = infoPorRuc.get(x.ruc)
       top10.push({
         producto: p.codigo, ranking: i + 1,
-        razon_social: info?.razon ?? '', direccion: info?.direccion ?? '',
+        razon_social: x.razon, direccion: x.direccion, codigo_osinerg: x.key,
         precio_centimos: toCentimos(x.precio), es_nuestro: x.ruc === ruc,
       })
     })
@@ -229,36 +325,54 @@ async function run(): Promise<{ status: number; body: unknown }> {
   // si la lista completa es idéntica a la del último snapshot, NO se crea fila
   // nueva (evita historial ruidoso); solo se refresca la fecha para mostrar que
   // sigue vigente. Si CUALQUIER precio/orden del Top 10 cambió → snapshot nuevo.
-  type T10 = { producto: string; ranking: number; razon_social: string; precio_centimos: number; es_nuestro: boolean }
-  const fp = (arr: T10[]) =>
-    JSON.stringify(
+  // Los totales van en la huella aparte: un competidor que entra o sale de la
+  // zona sin tocar el Top 10 igual cambia el "de N" y merece snapshot propio.
+  const totalEstablecimientos = establecimientosZona.size
+  type T10 = {
+    producto: string; ranking: number; razon_social: string
+    codigo_osinerg: string | null; precio_centimos: number; es_nuestro: boolean
+  }
+  const fp = (arr: T10[], totales: (number | null)[]) =>
+    JSON.stringify([
       [...arr]
         .sort((a, b) => (a.producto === b.producto ? a.ranking - b.ranking : a.producto < b.producto ? -1 : 1))
-        .map((t) => [t.producto, t.ranking, t.razon_social, t.precio_centimos, t.es_nuestro])
-    )
+        .map((t) => [t.producto, t.ranking, t.razon_social, t.codigo_osinerg ?? '', t.precio_centimos, t.es_nuestro]),
+      totales,
+    ])
+  const totalesNuevos = [
+    totalEstablecimientos, snapshot.total_db5, snapshot.total_regular, snapshot.total_premium,
+  ]
   const { data: prev } = await admin
     .from('osinergmin_snapshots')
-    .select('id')
+    .select('id, total_establecimientos, total_db5, total_regular, total_premium')
     .order('fecha_consulta', { ascending: false })
     .limit(1)
     .maybeSingle()
   if (prev) {
     const { data: prevTop } = await admin
       .from('osinergmin_top10')
-      .select('producto, ranking, razon_social, precio_centimos, es_nuestro')
+      .select('producto, ranking, razon_social, codigo_osinerg, precio_centimos, es_nuestro')
       .eq('snapshot_id', prev.id)
-    if (fp(top10) === fp((prevTop as T10[]) ?? [])) {
+    const totalesPrev = [
+      prev.total_establecimientos, prev.total_db5, prev.total_regular, prev.total_premium,
+    ]
+    if (fp(top10, totalesNuevos) === fp((prevTop as T10[]) ?? [], totalesPrev)) {
       await admin
         .from('osinergmin_snapshots')
         .update({ fecha_consulta: new Date().toISOString() })
         .eq('id', prev.id)
-      return { status: 200, body: { ok: true, skipped: true, distrito } }
+      return { status: 200, body: { ok: true, skipped: true, ...zona, avisos } }
     }
   }
 
   const { data: snap, error: snapErr } = await admin
     .from('osinergmin_snapshots')
-    .insert({ fecha_datos_excel: new Date().toISOString().slice(0, 10), distrito, total_establecimientos: rucsDistrito.size, ...snapshot })
+    .insert({
+      fecha_datos_excel: new Date().toISOString().slice(0, 10),
+      ...zona,
+      total_establecimientos: totalEstablecimientos,
+      ...snapshot,
+    })
     .select('id')
     .single()
   if (snapErr) return { status: 500, body: { error: `Error snapshot: ${snapErr.message}` } }
@@ -266,7 +380,10 @@ async function run(): Promise<{ status: number; body: unknown }> {
     const { error: e } = await admin.from('osinergmin_top10').insert(top10.map((t) => ({ ...t, snapshot_id: snap.id })))
     if (e) return { status: 500, body: { error: `Error top10: ${e.message}` } }
   }
-  return { status: 200, body: { ok: true, distrito, total_establecimientos: rucsDistrito.size } }
+  return {
+    status: 200,
+    body: { ok: true, ...zona, total_establecimientos: totalEstablecimientos, avisos },
+  }
 }
 
 serve(async (req) => {

@@ -38,6 +38,11 @@
   --row-alt: #f8fafc;
   --row-hover: #eff6ff;
 
+  /* Celda seleccionada del grid (Ventas · modo Completo). Va aparte de la
+     paleta primary: ese azul es un fondo suave y como borde no se distingue
+     del resto de la rejilla. Este tiene que gritar dónde está el cursor. */
+  --c-sel-ring: 29 78 216;
+
   /* Celdas resaltadas (usadas vía inline style en Ventas) */
   --c-hl-credit: #fef9c3;   --c-hl-credit-fg: #854d0e;
   --c-hl-neutral: #f1f5f9;  --c-hl-neutral2: #e2e8f0;
@@ -80,6 +85,8 @@
 
   --row-alt: #243044;
   --row-hover: #2d3d57;
+
+  --c-sel-ring: 96 165 250;
 
   --c-hl-credit: #3b3410;   --c-hl-credit-fg: #fde68a;
   --c-hl-neutral: #2a3854;  --c-hl-neutral2: #34435c;
@@ -160,11 +167,41 @@
   }
 
   /* Celda seleccionada del grid tipo hoja de cálculo (ver CeldaGrid).
-     `outline` en vez de `border` para no descuadrar el ancho de la columna. */
+     Tres señales, porque en una rejilla ancha un borde fino se pierde:
+       · marco sólido de 2px (`outline`, no `border`: no descuadra la columna),
+       · halo que LATE hacia afuera → el ojo lo encuentra sin buscar,
+       · tirador en la esquina inferior derecha, como Excel/Sheets.
+     El halo va en ::before (box-shadow) y no ocupa espacio, así que el latido
+     no mueve ni un píxel de la tabla. ::after está tomado por .celda-copiada
+     (una celda puede estar seleccionada y copiada a la vez). */
   .table-excel tbody td.celda-activa {
-    outline: 2px solid rgb(var(--c-primary-dark));
+    position: relative;
+    z-index: 1;
+    outline: 2px solid rgb(var(--c-sel-ring));
     outline-offset: -2px;
     background-color: var(--c-hl-info);
+  }
+  .table-excel tbody td.celda-activa::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    /* Tirador: cuadrito sólido en la esquina inferior derecha. */
+    background-image: linear-gradient(rgb(var(--c-sel-ring)), rgb(var(--c-sel-ring)));
+    background-repeat: no-repeat;
+    background-position: 100% 100%;
+    background-size: 6px 6px;
+    animation: celda-latido 1.6s ease-out infinite;
+  }
+  @keyframes celda-latido {
+    0%   { box-shadow: 0 0 0 0 rgb(var(--c-sel-ring) / 0.55); }
+    70%  { box-shadow: 0 0 0 5px rgb(var(--c-sel-ring) / 0); }
+    100% { box-shadow: 0 0 0 0 rgb(var(--c-sel-ring) / 0); }
+  }
+  /* La fila de la celda activa se tiñe: ubica el renglón de un vistazo en una
+     tabla ancha. Va DESPUÉS de :nth-child(even)/:hover para ganarles. */
+  .table-excel tbody tr:has(td.celda-activa) {
+    background-color: var(--row-hover);
   }
 
   /* Celda copiada al portapapeles: borde de guiones en marcha ("marching ants"),
@@ -197,8 +234,11 @@
       background-position: 12px 0, -12px 100%, 0 -12px, 100% 12px;
     }
   }
+  /* Sin animación: el marco, el tirador y la fila teñida siguen señalando la
+     celda; solo se apaga el movimiento. */
   @media (prefers-reduced-motion: reduce) {
-    .table-excel tbody td.celda-copiada::after { animation: none; }
+    .table-excel tbody td.celda-copiada::after,
+    .table-excel tbody td.celda-activa::before { animation: none; }
   }
 
   /* ── Botones ── */

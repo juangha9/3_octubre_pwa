@@ -60,6 +60,17 @@ function precioDe(snap: OsinergminSnapshot, code: string): number | null {
   if (code === 'PREMIUM') return snap.precio_premium_centimos
   return null
 }
+// El "de N" del puesto es el nº de grifos que venden ESE producto, no el total
+// del distrito (no todos venden los tres). Los snapshots previos a la migración
+// 015 no lo traen: se cae al total de la zona.
+function totalDe(snap: OsinergminSnapshot, code: string): number {
+  const t =
+    code === 'DB5' ? snap.total_db5
+    : code === 'REGULAR' ? snap.total_regular
+    : code === 'PREMIUM' ? snap.total_premium
+    : null
+  return t ?? snap.total_establecimientos
+}
 
 // ─── Gráfico de evolución de rankings ─────────────────────────────
 // SVG hecho a mano (sin librerías) para no sumar dependencias a la PWA.
@@ -687,11 +698,16 @@ export default function OsinergminPage() {
       }
       if (!data?.ok) throw new Error(data?.error ?? 'Respuesta inesperada.')
 
+      // `avisos`: columnas opcionales que el Excel dejó de traer (p. ej. la de
+      // fecha, que desempata). No invalidan el ranking, pero deben verse: un
+      // cambio de cabecera silencioso ya degradó el desempate una vez.
+      const avisos: string[] = data.avisos ?? []
+      const base = data.skipped
+        ? `Revisado: sin cambios en ${data.distrito}.`
+        : `Actualizado. ${data.distrito}, ${data.provincia} · ${data.total_establecimientos} establecimientos.`
       setResult({
-        ok: true,
-        msg: data.skipped
-          ? `Revisado: sin cambios en ${data.distrito}.`
-          : `Actualizado. Distrito ${data.distrito} · ${data.total_establecimientos} establecimientos.`,
+        ok: avisos.length === 0,
+        msg: avisos.length > 0 ? `${base} Ojo: ${avisos.join(' ')}` : base,
       })
       cargar()
     } catch (e) {
@@ -747,10 +763,17 @@ export default function OsinergminPage() {
 
   return (
     <div className="h-full overflow-auto p-4">
-      {/* Encabezado */}
+      {/* Encabezado. La zona lleva provincia y departamento porque el distrito
+          solo no identifica el mercado: hay distritos homónimos (MIRAFLORES
+          existe en Arequipa y en Lima). */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-base font-semibold text-app-text">
           Ranking de precios — Distrito {actual.distrito}
+          {actual.provincia && (
+            <span className="font-normal text-app-muted">
+              {' '}· {actual.provincia}, {actual.departamento}
+            </span>
+          )}
         </h2>
         <div className="flex items-center gap-3">
           <span className="text-xs text-app-muted">
@@ -762,6 +785,20 @@ export default function OsinergminPage() {
         </div>
       </div>
       {BannerResultado}
+
+      {/* Procedencia de los datos. Está a la vista a propósito: la web de
+          OSINERGMIN (facilito) consulta una base viva y llega a mostrar algún
+          grifo que el volcado oficial NO trae — el 2026-07-10 la web listaba 13
+          grifos con Gasohol Regular en Miraflores y el Excel solo 12 (faltaba
+          GRUPO CONSTRUCTOR FAMEK). Sin esta nota, esa diferencia se lee como un
+          error de la app y no lo es. Facilito no se puede consultar desde el
+          servidor: su buscador exige un token de reCAPTCHA v3. */}
+      <p className="mb-4 text-xs text-app-muted">
+        Fuente: <span className="text-app-text">Excel oficial «Últimos Precios Registrados — EVPC»</span> de
+        OSINERGMIN (SCOP), el único canal que publican para consulta automática. La web de OSINERGMIN
+        consulta una base viva y puede mostrar algún grifo que aún no está en ese Excel; si ves una
+        diferencia, es eso y no un fallo del cálculo.
+      </p>
 
       {/* Tarjetas de posición actual */}
       <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -776,7 +813,9 @@ export default function OsinergminPage() {
                   {rank != null ? `#${rank}` : '—'}
                 </span>
                 {rank != null && (
-                  <span className="text-xs text-app-muted">de {actual.total_establecimientos}</span>
+                  <span className="text-xs text-app-muted">
+                    de {totalDe(actual, p.code)} que lo venden
+                  </span>
                 )}
               </div>
               <div className="mt-1 font-mono text-sm text-app-text">{soles(precio)}</div>
@@ -812,11 +851,22 @@ export default function OsinergminPage() {
                     {filas.map((f) => (
                       <tr key={f.id} className={f.es_nuestro ? 'bg-primary/30 font-semibold' : ''}>
                         <td className="text-center font-mono text-xs align-top">{f.ranking}</td>
+                        {/* La dirección va debajo del nombre porque una misma
+                            empresa puede tener dos grifos en el distrito (p. ej.
+                            COESTI): sin ella, dos filas se leen idénticas. */}
                         <td className="whitespace-normal text-xs align-top">
                           <span className="line-clamp-2 break-words" title={f.razon_social}>
                             {f.razon_social}
                             {f.es_nuestro && <span className="ml-1 text-primary-text">(nosotros)</span>}
                           </span>
+                          {f.direccion && (
+                            <span
+                              className="mt-0.5 line-clamp-1 break-words text-[11px] font-normal text-app-muted"
+                              title={f.direccion}
+                            >
+                              {f.direccion}
+                            </span>
+                          )}
                         </td>
                         <td className="whitespace-nowrap text-right align-top font-mono text-xs">
                           {soles(f.precio_centimos)}
