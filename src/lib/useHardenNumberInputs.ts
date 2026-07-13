@@ -1,12 +1,15 @@
 import { useEffect } from 'react'
 
 // Teclas que NO se admiten en ninguna caja numérica de la app.
-const BLOCKED_KEYS = ['e', 'E', '+', '-', '*', '/']
+const BLOCKED_KEYS = ['e', 'E', '+', '*', '/']
 
 /**
  * Endurece de forma GLOBAL todos los `<input type="number">` de la app:
  *  - Bloquea teclear  e / E / + / - / * / /
  *  - El scroll del ratón NO cambia el valor (se quita el foco al hacer wheel)
+ *
+ * El `-` es la única excepción configurable: un input marcado con `data-negativo`
+ * sí lo admite (hoy solo REDONDEO, que puede restar céntimos).
  *
  * Las flechas (spinners) se ocultan por CSS en `index.css`.
  * Se llama UNA sola vez en la raíz (`App.tsx`); cubre inputs actuales y futuros
@@ -18,7 +21,9 @@ export function useHardenNumberInputs() {
       el instanceof HTMLInputElement && el.type === 'number'
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isNumberInput(e.target) && BLOCKED_KEYS.includes(e.key)) {
+      if (!isNumberInput(e.target)) return
+      const admiteNegativo = e.target.dataset.negativo !== undefined
+      if (BLOCKED_KEYS.includes(e.key) || (e.key === '-' && !admiteNegativo)) {
         e.preventDefault()
       }
     }

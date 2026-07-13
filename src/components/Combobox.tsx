@@ -27,6 +27,12 @@ interface ComboboxProps {
   sugerencia?: string
   /** Abrir el menú al enfocar. Con `false` solo se abre al escribir o con ↓. */
   abrirAlEnfocar?: boolean
+  /**
+   * Texto ya tecleado ANTES de que el combo existiera. Dentro de un grid, la 1ª
+   * letra se pulsa sobre la celda (que aún no monta el input): si no se sembrara
+   * aquí, esa letra se perdería y habría que escribirla dos veces.
+   */
+  semilla?: string
 }
 
 /**
@@ -50,6 +56,7 @@ export default function Combobox({
   id,
   sugerencia,
   abrirAlEnfocar = true,
+  semilla = '',
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -66,6 +73,8 @@ export default function Combobox({
   // El estado `open` se actualiza async; este ref permite cancelar (Escape) o
   // evitar doble-commit de forma síncrona antes de que llegue el blur.
   const openRef = useRef(false)
+  // La semilla es la del montaje y se consume una sola vez (en el primer foco).
+  const semillaRef = useRef(semilla)
 
   const selectedLabel = options.find(o => o.value === value)?.label ?? ''
 
@@ -189,7 +198,15 @@ export default function Combobox({
       else if (!aceptarSugerencia()) closeAndCommit()
     } else if (e.key === 'Tab') {
       // Sin preventDefault: la navegación entre celdas la decide quien envuelve.
-      aceptarSugerencia()
+      // Con la lista abierta, Tab confirma lo resaltado igual que Enter. Antes se
+      // dejaba caer al blur, que solo acierta con coincidencia exacta o cuando
+      // queda UNA opción: con dos o más, bajar con ↓ y tabular perdía la elección.
+      if (open && filtered[activeIdx]) {
+        closeMenu() // `openRef` a false: el blur que sigue ya no revierte nada
+        commitValue(filtered[activeIdx].value)
+      } else {
+        aceptarSugerencia()
+      }
     } else if (e.key === 'Escape') {
       e.preventDefault()
       closeMenu() // cancelar sin persistir el texto
@@ -208,8 +225,21 @@ export default function Combobox({
         placeholder={haySugerencia ? sugerenciaLabel : placeholder}
         value={display}
         // Se muestra la opción actual seleccionada de punta a punta: teclear la
-        // reemplaza, pero un clic suelto no borra nada.
-        onFocus={e => { openFromSelection(); e.currentTarget.select() }}
+        // reemplaza, pero un clic suelto no borra nada. Si el combo nació de una
+        // tecla (grid), esa letra ya es el filtro: se recoge y se abre el menú.
+        onFocus={e => {
+          const s = semillaRef.current
+          if (s) {
+            semillaRef.current = ''
+            setQuery(s)
+            setTecleado(true)
+            setActiveIdx(0)
+            openMenu()
+            return
+          }
+          openFromSelection()
+          e.currentTarget.select()
+        }}
         onChange={e => { setQuery(e.target.value); setTecleado(true); openMenu(); setActiveIdx(0) }}
         onKeyDown={onKeyDown}
         // Al perder foco por teclado (Tab) confirmamos/cerramos. Al hacer clic en

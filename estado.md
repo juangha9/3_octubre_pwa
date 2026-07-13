@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-08** (tema oscuro global, combobox editable en Ventas, fix 400 al escribir fecha, gráfico OSINERGMIN tematizado)
+Última actualización: **2026-07-12** (motor de hoja de cálculo extraído a `lib/useGridHoja.ts` y aplicado a las DOS tablas de Ventas; casillas numéricas blindadas; precio del día corregible sin ser retroactivo)
 
 ## Módulos completados
 
@@ -25,7 +25,7 @@ metadata:
   - Sistema — `app_config` editable por `admin_grifo` y `superadmin` (política RLS actualizada en migración `002_app_config_admin_write.sql`, **aplicada con éxito**)
 - **Ventas del Día & Ventas Diarias (Unificados)** ← **CONSTRUIDO Y PERFECCIONADO** (`src/features/admin/ventas/VentasDelDiaPage.tsx`)
   - **Toolbar**: fecha, precios DIESEL/REGULAR/PREMIUM (auto-save en `precios_diarios`, **heredados** del día anterior más reciente si hoy no tiene precio propio — ver sesión 2026-07-03), toggle ABREVIADO/COMPLETO, botón **"Corregir fecha"** (mover el día completo a otra fecha, solo si el destino está vacío). **Ya NO existe** el botón REINICIAR DÍA (se quitó por decisión de negocio: nada debe borrar en masa a nivel de BD).
-  - **Tabla de Turnos (Editable e Instantánea)**: Celdas de consola, yape, openpay, depósito, pruebas, redondeo y colaborador editables directamente. Auto-guardan en `onBlur` (o al cambiar colaborador) con **refresco silencioso (flicker-free)**. Guarda en `cierres_caja`.
+  - **Tabla de Turnos**: **grid tipo hoja de cálculo** (mismo motor que la de vales, ver sesión 2026-07-12). Consola, yape, openpay, depósito, dsctos vales, pruebas, redondeo y colaborador se editan celda a celda y guardan al confirmar, con **refresco silencioso (flicker-free)**. Guarda en `cierres_caja`.
   - **Registro Rápido de Créditos** (modo Abreviado): Turno + Monto S/. → `registro_ventas` (fila con `cantidad_galones = 0`). Se muestran en **4 columnas** (una por turno) con subtotal cada una, sin altura fija (antes era una mini-tabla de 48px con scroll).
   - **Registros de Vales (modo Completo)**: tabla 100% editable en línea, **sin botón "Editar"** — cada celda auto-guarda en `onBlur` (mismo patrón que la Tabla de Turnos). Las filas que vinieron de Registro Rápido (aún con `cantidad_galones = 0` o recién completadas) se resaltan en ámbar; hay un aviso arriba de la tabla con el conteo de pendientes por completar. Al ingresar los galones reales, el importe se recalcula como `galones × precio` (autoritativo, viene del documento/contrato) y se muestra una alerta si difiere del monto rápido original en más de 5 céntimos (tolerancia de redondeo normal).
   - **Historial Mensual**: pestaña con agrupación de cierres por día, total acumulado del mes, faltantes/sobrantes por turno/día, imprimir reporte. Lee de `cierres_caja`.
@@ -244,6 +244,69 @@ metadata:
 ### ⚠️ Nota de despliegue en desarrollo (Vite)
 Cambios en **`tailwind.config.ts`** o en la definición de **variables/tema en `index.css`** (nuevas clases utilitarias, `@layer`, tokens) requieren **reiniciar el servidor de Vite** (`Ctrl+C` y `npm run dev`), NO basta `Ctrl+Shift+R`: Vite/PostCSS solo regeneran el CSS de Tailwind al arrancar o cuando cambia un archivo observado, y añadir clases nuevas puede no invalidar el caché de HMR. Cambios solo en JSX/TS/valores existentes sí refrescan con `Ctrl+Shift+R`. Ver **BUENAS_PRACTICAS.md §12**.
 
+## Cambios de esta sesión (2026-07-12)
+
+### El motor de hoja de cálculo se extrajo y ahora lo usan las DOS tablas de Ventas
+1. **Nuevo `src/lib/useGridHoja.ts`**. Toda la mecánica de grid (selección, navegación,
+   edición, portapapeles, deshacer) vivía suelta dentro de `VentasDelDiaPage` y solo servía
+   a la tabla de vales de COMPLETO. Ahora es un hook con callbacks (`editable`, `texto`,
+   `numero`, `valor`, `aplicar`, `guardar`, `revertir`, `deshacer`, `teclaDirecta`…): el hook
+   solo sabe de **coordenadas**, y qué hay en cada celda lo resuelve la página.
+2. **La Tabla de Turnos dejó de ser inputs sueltos con `onBlur`** y pasó a ser un grid con el
+   mismo motor: clic selecciona, Enter/F2/doble clic editan, teclear encima reemplaza, Tab,
+   Ctrl+C/V, Ctrl+Z de un nivel (`ultimoCambioTurno`), Supr vacía. COLABORADOR se resuelve
+   tecleando su inicial (`colaboradorPorTecla`), igual que TURNO y PRODUCTO.
+   - ⚠️ **Sus columnas se corren con el modo**: los créditos ocupan 4 columnas en COMPLETO y
+     1 en ABREVIADO, así que PRUEBA/REDONDEO/EFECTIVO/COLABORADOR se **calculan** (`colTurno`,
+     desde `T_COL_CREDITO`), no se fijan a mano. `campoTurno(c)` mapea columna → campo.
+   - Los dos grids se enlazan por refs (`soltarTurnos` / `soltarRegistros`): al tomar el foco
+     uno, el otro suelta su selección — en una hoja de cálculo hay **una sola** celda activa.
+3. **`CeldaGrid`** gana `textoCopia` (qué se lleva Ctrl+C cuando lo visible es un placeholder
+   o lleva moneda/anexo) y `pie` (anexo bajo el contenido, fuera de la copia: el `sug.` de
+   REDONDEO y el `↻` de reprecio).
+
+### Casillas numéricas — el `useHardenNumberInputs` tenía un agujero
+4. **La `e` entraba en GALONES** pese al hook global: este solo vigila lo que se teclea
+   **dentro** de un `<input type="number">`, y en un grid el valor entra por dos caminos que
+   no pasan por el input — al **teclear sobre la celda seleccionada** (la 1ª tecla se siembra
+   en el estado y el input se monta después) y al **pegar** con Ctrl+V. Nuevo
+   **`src/lib/numero.ts`** (`esTeclaNumerica`, `sanearNumero`); `useGridHoja` los aplica en
+   esos dos caminos si la celda se declara `numero`. **Los dos frentes hay que cubrirlos.**
+5. **Las flechas ya no incrementan** una casilla numérica: navegan entre celdas (era el
+   comportamiento nativo del spinner en la tabla de turnos, que no era grid).
+6. **`-` ahora es configurable**: se sigue bloqueando en todas las cajas salvo las marcadas
+   con **`data-negativo`** (hoy solo REDONDEO, la única que puede restar céntimos). En el
+   grid se declara con `negativo` en la celda.
+
+### Ventas — el precio del día: no retroactivo, pero **corregible**
+7. `precioDeFila` (2026-07-09) protege lo ya registrado, pero si el precio se cargó **mal**,
+   esas filas quedaban valoradas al precio equivocado y **editarlas no las arreglaba**
+   (conservan su `precio_unit_centimos`). Se mantiene la no-retroactividad —el precio puede
+   subir de verdad a media jornada y convivir dos precios el mismo día— y se añaden **dos
+   salidas explícitas, nunca automáticas**:
+   - **En bloque**: `filasDesfasadas` / `resumenDesfase` → banda ámbar con el desglose
+     (`REGULAR 3 × S/10.00 → S/9.00`) y botón **Reajustar**. El *"No, están bien"* descarta el
+     aviso por **firma `fecha|precios`**: si el precio vuelve a cambiar, la advertencia es
+     nueva y reaparece.
+   - **Fila a fila**: la celda PRECIO TOTAL de una venta desfasada muestra `↻ 9.00 = S/ 18.00`
+     (un `pie` clicable); revalora **solo esa fila**. Es la salida cuando unas ventas del día
+     están bien y otras no.
+   - `reajustarPrecios(filas)` reescribe `precio_unit_centimos` + `importe_centimos` ⇒ VARIACIÓN
+     y el redondeo sugerido se recolocan solos. Los créditos rápidos (sin galones) no entran:
+     su importe se digita a mano, no sale de un precio.
+
+### Combobox de CLIENTE — dos bugs de teclado
+8. **Se perdía la 1ª letra**: la celda se comía la tecla para abrir el editor y el `Combobox`
+   se montaba *después*, ya sin ella. Nueva prop **`semilla`**: la tecla viaja al combo y se
+   usa como filtro inicial en su primer foco.
+9. **Tab no confirmaba lo resaltado**: no miraba `activeIdx`, se dejaba caer al `blur` →
+   `closeAndCommit`, que **solo acierta con coincidencia exacta o cuando queda UNA opción
+   filtrada**. Con dos o más, bajar con ↓ y tabular revertía al valor anterior. Ahora, con la
+   lista abierta, Tab confirma lo resaltado igual que Enter (y cierra el menú antes del blur,
+   para que este no revierta).
+
+- `npx tsc --noEmit` y `npm run build` en verde. **Sin migraciones**: todo es frontend.
+
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.
 - **Fix refresh al minimizar** — `onAuthStateChange` ignora `TOKEN_REFRESHED` y `SIGNED_IN` si ya hay perfil cargado (usa `profileRef`).
@@ -251,9 +314,11 @@ Cambios en **`tailwind.config.ts`** o en la definición de **variables/tema en `
 - **Robustez de carga** — todo `load*` con `try/catch/finally`; los datos de Supabase se validan con `Array.isArray` antes de iterar (el tipo puede venir como `GenericStringError`).
 
 ## Convenciones / utilidades nuevas en `lib/`
-- **`useHardenNumberInputs.ts`** — hook global (1 llamada en `App.tsx`) que endurece todos los inputs numéricos. Para futuros inputs: basta `type="number"`, ya queda cubierto. (`-` bloqueado en todos; si algún campo necesitara negativos, hacer el hook configurable.)
+- **`useHardenNumberInputs.ts`** — hook global (1 llamada en `App.tsx`) que endurece todos los inputs numéricos. Para futuros inputs: basta `type="number"`, ya queda cubierto. `-` bloqueado salvo en inputs con **`data-negativo`** (hoy solo REDONDEO). ⚠️ **No cubre** lo que entra sin pasar por el input (grid: teclear sobre la celda, pegar) → ver `numero.ts`.
+- **`numero.ts`** — `esTeclaNumerica` / `sanearNumero`: el otro frente de las casillas numéricas (lo que se siembra en el estado o se pega). `useGridHoja` los aplica en las celdas `numero`.
+- **`useGridHoja.ts`** — motor de hoja de cálculo (selección, navegación, edición, Ctrl+C/V/Z) sobre una tabla de `<CeldaGrid>`. **Toda tabla de captura debe usarlo**, no inputs sueltos.
 - **`usePersistedState.ts`** — `useState` que persiste en `localStorage`. Usar para filtros; claves con prefijo de módulo (`'seguimiento.mes'`). Pesa bytes → no satura el navegador.
-- Convenciones documentadas en **BUENAS_PRACTICAS.md §6** (rev 4).
+- Convenciones documentadas en **BUENAS_PRACTICAS.md §6** (rev 5: tablas de captura = hoja de cálculo; inputs numéricos con sus **dos** frentes).
 
 ## Módulos pendientes (admin)
 

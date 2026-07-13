@@ -513,21 +513,49 @@ osinergmin_top10
   (`w-full`) → se **adaptan** al monitor (1080p, 1440p…). El scroll horizontal lo
   maneja un contenedor `overflow-x-auto`. Preferir adaptativo, no anchos fijos.
 
+### Tablas de captura = hoja de cálculo
+Toda tabla donde el usuario **digita** datos (Ventas: turnos y vales) se comporta igual
+que Excel/Sheets, con el mismo motor: `useGridHoja` (`lib/`) + `CeldaGrid` (`components/`).
+Nada de tablas con inputs sueltos: se sienten distintas y rompen la costumbre del usuario.
+
+- Un clic **selecciona** la celda (no la abre): así se puede copiar.
+- **Enter / F2 / doble clic** abren el editor; **teclear encima** reemplaza el contenido.
+- **Flechas** = mover la selección. **Tab** = celda siguiente (en los bordes sale de la tabla).
+- **Ctrl+C / Ctrl+V** por celda (con borde animado en la copiada) y **Ctrl+Z** de un nivel.
+- **Supr** vacía la celda. **Escape** cancela la edición sin guardar.
+- Se guarda **celda a celda** al confirmar, no con un botón "Editar".
+- Fuera de los grids, el Ctrl+Z **nativo** se bloquea: los campos que se guardan en `onBlur`
+  revertirían el texto sin avisar y el blur siguiente persistiría el valor viejo.
+
 ### Inputs numéricos (cajas de texto de números)
-Todo `<input type="number">` queda **endurecido automáticamente** por el hook global
-`useHardenNumberInputs()` (en `lib/`, llamado una vez en `App.tsx`) + CSS en `index.css`.
-No hay que configurar cada input: basta con usar `type="number"`.
+Una casilla numérica **solo acepta un número**. Nunca la letra `e`/`E` (que el navegador
+admite en `type="number"` por la notación científica: `1e5`), ni los operadores
+`+  -  *  /`, ni ningún otro símbolo.
 
 Reglas aplicadas a **toda** caja numérica:
 - **No** admite teclear `e` / `E`, ni `+  -  *  /`.
 - El **scroll del ratón no cambia** el valor (se quita el foco al hacer wheel).
-- **Sin flechas** (spinners) arriba/abajo: solo se digita el número.
+- **Sin flechas** (spinners) arriba/abajo: solo se digita el número. Dentro de un grid,
+  las flechas **navegan entre celdas**, jamás incrementan el valor de la casilla.
 - Para montos: céntimos enteros + `toCentimos` / `formatSoles` (ver §6 dinero).
 - Mostrar 0 como **placeholder** (`placeholder="0.00"`, `value=''`) en celdas editables,
   no como `0.00` fijo, para que al escribir no se antepongan dígitos (evita "50" por "5").
 
-> Si algún input llegara a necesitar negativos, hacer el hook configurable para excluir
-> ese campo; hoy se bloquea `-` en todos por pedido de negocio.
+Hay **dos frentes**, y los dos hay que cubrirlos:
+
+1. **Lo que se teclea dentro del input** → hook global `useHardenNumberInputs()` (`lib/`,
+   llamado una vez en `App.tsx`) + CSS en `index.css`. No hay que configurar cada input:
+   basta con usar `type="number"`.
+2. **Lo que entra sin pasar por el input** → helpers de `lib/numero.ts`
+   (`esTeclaNumerica`, `sanearNumero`). En un grid tipo hoja de cálculo, el valor también
+   entra al teclear sobre la celda *seleccionada* (la 1ª tecla se siembra en el estado y
+   el input se monta después) y al **pegar** con Ctrl+V. El hook no ve nada de eso: por
+   ahí se colaba la `e` en GALONES. `useGridHoja` ya lo filtra si la celda se declara
+   `numero`.
+
+> **Negativos:** se bloquea `-` en todas las casillas salvo las marcadas con
+> `data-negativo` (hoy solo REDONDEO, la única que puede restar céntimos). En el grid,
+> se declara con `negativo` en la celda.
 
 ---
 
@@ -660,6 +688,19 @@ Igual que ABREVIADO pero **TOTAL CRÉDITOS se expande** en columnas individuales
   a un precio diferente al del día.
 - Cada fila guardada actualiza automáticamente las columnas CORPORACIÓN / LICITACIONES /
   PARTICULARES / CHEVRON de la tabla superior según el tipo de empresa y turno.
+
+**Precio del día: no es retroactivo, pero sí corregible.**
+Cada venta conserva el `precio_unit_centimos` con el que se grabó: cambiar el precio del
+día **no** reescribe lo ya registrado. Es a propósito — el precio puede subir de verdad a
+media jornada y convivir dos precios el mismo día. Pero si el precio se cargó **mal**, esas
+filas quedan valoradas al precio equivocado, así que hay dos salidas explícitas (nunca
+automáticas):
+- **Aviso en bloque:** si quedan ventas a un precio distinto al vigente, sale una banda
+  ámbar con el desglose (`REGULAR 3 × S/10.00 → S/9.00`) y el botón **Reajustar**. Si el
+  usuario responde *"No, están bien"*, el aviso calla hasta que el precio vuelva a cambiar.
+- **Fila a fila:** la celda PRECIO TOTAL de una venta desfasada muestra debajo
+  `↻ 9.00 = S/ 18.00`; un clic revalora **solo esa fila**. Es lo que se usa cuando unas
+  ventas del día están bien y otras no.
 
 ### 10.3.1 Flujo grifero → modal de vales → vista admin
 

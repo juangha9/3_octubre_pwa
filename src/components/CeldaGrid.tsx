@@ -20,6 +20,10 @@ interface CeldaGridProps {
   copiada?: boolean
   /** Lo que se ve cuando NO está en edición. Su texto es lo que copia Ctrl+C. */
   contenido: React.ReactNode
+  /** Qué copia Ctrl+C si el texto visible no sirve (placeholder, moneda, anexo). */
+  textoCopia?: string
+  /** Anexo bajo el contenido, fuera de edición y fuera de la copia (p. ej. una sugerencia). */
+  pie?: React.ReactNode
   /** El input real; solo se monta mientras la celda está en edición. */
   editor?: React.ReactNode
   caret?: Caret
@@ -48,6 +52,8 @@ export default function CeldaGrid({
   tabbable = false,
   copiada = false,
   contenido,
+  textoCopia,
+  pie,
   editor,
   caret = 'todo',
   align = 'left',
@@ -85,6 +91,7 @@ export default function CeldaGrid({
     <td
       ref={tdRef}
       data-celda={`${f}-${c}`}
+      data-copia={textoCopia}
       // Enfocable solo cuando no edita: el foco pertenece entonces al input.
       tabIndex={!enEdicion && tabbable ? 0 : -1}
       onMouseDown={onSeleccionar}
@@ -92,7 +99,14 @@ export default function CeldaGrid({
       className={`outline-none ${activa && !enEdicion ? 'celda-activa' : ''} ${copiada && !enEdicion ? 'celda-copiada' : ''} ${className}`}
       style={style}
     >
-      {enEdicion ? editor : <div className={`truncate ${alineacion}`}>{contenido}</div>}
+      {enEdicion ? (
+        editor
+      ) : (
+        <>
+          <div className={`truncate ${alineacion}`}>{contenido}</div>
+          {pie}
+        </>
+      )}
     </td>
   )
 }
