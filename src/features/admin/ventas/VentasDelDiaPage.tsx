@@ -1,12 +1,26 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
 import { hoyLocal, esFechaValida } from '@/lib/date'
 import { formatSoles, toCentimos, sumCentimos } from '@/lib/money'
+// Local-first: la página lee y escribe SIEMPRE en la base local (Dexie);
+// el worker de sync replica contra Supabase por detrás. Por eso ya no hay
+// "loadDia": useLiveQuery re-renderiza solo ante cualquier cambio local.
+import {
+  leerCatalogos,
+  leerDia,
+  leerCierresRango,
+  insertRegistroVenta,
+  updateRegistroVenta,
+  softDeleteRegistroVenta,
+  upsertCierreCaja,
+  upsertPrecioDiario,
+} from '@/lib/local/repo'
+import { asegurarRango, sincronizarAhora } from '@/lib/local/sync'
 import Combobox from '@/components/Combobox'
 import CeldaGrid from '@/components/CeldaGrid'
 import { useGridHoja, type GridHoja } from '@/lib/useGridHoja'
-import type { Turno, EmpresaCliente, TipoCombustible } from '@/types'
 
 // ─── Tipos Locales ────────────────────────────────────────────────
 
@@ -262,13 +276,44 @@ export default function VentasPage() {
   const [activeTab, setActiveTab] = useState<Tab>('registro')
   const [modo, setModo] = useState<Modo>('abreviado')
 
-  // ─── ESTADO: REGISTRO DIARIO ────────────────────────────────────
+  // ─── ESTADO: REGISTRO DIARIO (local-first) ──────────────────────
   const [fecha, setFecha] = useState(fechaInicial)
-  const [cierresMap, setCierresMap] = useState<Record<number, CierreRow>>({})
+
+  // Los datos del día viven en Dexie: useLiveQuery re-emite ante cualquier
+  // cambio local (edición propia o pull del servidor). Nada de loadDia.
+  const dia = useLiveQuery(
+    () => (esFechaValida(fecha) ? leerDia(fecha) : Promise.resolve(null)),
+    [fecha]
+  )
+  const loadingDia = dia === undefined
+
+  const cierresMap = useMemo(() => {
+    const map: Record<number, CierreRow> = {}
+    for (const c of dia?.cierres ?? []) map[c.turno_id] = c
+    return map
+  }, [dia])
+
+  const registros: RegistroRow[] = useMemo(() => dia?.registros ?? [], [dia])
+
   const [precios, setPrecios] = useState({ db5: '', regular: '', premium: '' })
-  const [precioId, setPrecioId] = useState<string | null>(null)
-  const [registros, setRegistros] = useState<RegistroRow[]>([])
-  const [loadingDia, setLoadingDia] = useState(true)
+
+  // Siembra los inputs de precio cuando cambia la fila de precios local.
+  // Deps finas (id/updated_at): un cambio en registros o cierres del día
+  // no debe pisar un precio a medio tipear.
+  useEffect(() => {
+    if (dia === undefined) return
+    const pd = dia?.precioRow
+    if (pd) {
+      setPrecios({
+        db5: (pd.precio_db5_centimos / 100).toFixed(2),
+        regular: (pd.precio_regular_centimos / 100).toFixed(2),
+        premium: (pd.precio_premium_centimos / 100).toFixed(2),
+      })
+    } else {
+      setPrecios({ db5: '', regular: '', premium: '' })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dia?.precioRow?.id, dia?.precioRow?.updated_at, dia === undefined, fecha])
   const [savingPrecios, setSavingPrecios] = useState(false)
   const [savingReg, setSavingReg] = useState(false)
   // Reajuste de filas valoradas a un precio viejo (ver `filasDesfasadas`).
@@ -309,11 +354,14 @@ export default function VentasPage() {
   const soltarTurnos = useRef(() => {})
   const soltarRegistros = useRef(() => {})
 
-  // Catálogos de referencia
-  const [turnos, setTurnos] = useState<Turno[]>([])
-  const [empresas, setEmpresas] = useState<EmpresaCliente[]>([])
-  const [combustibles, setCombustibles] = useState<TipoCombustible[]>([])
-  const [colaboradores, setColaboradores] = useState<{ id: string; nombre: string }[]>([])
+  // Catálogos de referencia (espejo local, lo mantiene el worker de sync).
+  // Memoizados: un `?? []` a secas crearía un array nuevo por render y los
+  // efectos que dependen de ellos (p. ej. inputsMap) entrarían en bucle.
+  const catalogos = useLiveQuery(leerCatalogos, [])
+  const turnos = useMemo(() => catalogos?.turnos ?? [], [catalogos])
+  const empresas = useMemo(() => catalogos?.empresas ?? [], [catalogos])
+  const combustibles = useMemo(() => catalogos?.combustibles ?? [], [catalogos])
+  const colaboradores = useMemo(() => catalogos?.colaboradores ?? [], [catalogos])
 
   // ─── ESTADO: HISTORIAL MENSUAL ──────────────────────────────────
   const [selectedMonth, setSelectedMonth] = useState(() => {
@@ -322,120 +370,28 @@ export default function VentasPage() {
     const m = String(d.getMonth() + 1).padStart(2, '0')
     return `${y}-${m}`
   })
-  const [loadingHistorial, setLoadingHistorial] = useState(false)
-  const [cierresHistorial, setCierresHistorial] = useState<CierreRowCalculated[]>([])
+  // (loadingHistorial y cierresHistorial ahora se derivan del liveQuery de abajo)
 
-  // ── Carga de referencias (una vez) ────────────────────────────
+  // ── Turno por defecto de la fila de entrada (cuando llega el catálogo) ──
   useEffect(() => {
-    Promise.all([
-      supabase.from('turnos').select('*').eq('activo', true).order('id'),
-      supabase.from('empresas_clientes').select('*').eq('activo', true).order('nombre'),
-      supabase.from('tipos_combustible').select('*').eq('activo', true).order('nombre'),
-      supabase.from('profiles').select('id, nombre').eq('activo', true).order('nombre'),
-    ]).then(([t, e, c, p]) => {
-      const ts = t.data ?? []
-      setTurnos(ts)
-      setEmpresas(e.data ?? [])
-      setCombustibles(c.data ?? [])
-      setColaboradores(p.data ?? [])
-      if (ts.length > 0) {
-        setNuevo(prev => ({ ...prev, turno_id: String(ts[0].id) }))
-      }
-    })
-  }, [])
-
-  // ── Carga de datos del día (Registro Diario) ──────────────────
-  const loadDia = useCallback(async (silent = false) => {
-    // Al escribir la fecha a mano queda incompleta hasta terminar; consultar
-    // con una fecha vacía/parcial provoca 400 (Bad Request). Se ignora hasta
-    // que sea una fecha real y completa.
-    if (!esFechaValida(fecha)) {
-      setLoadingDia(false)
-      return
+    if (turnos.length > 0) {
+      setNuevo(prev => (prev.turno_id ? prev : { ...prev, turno_id: String(turnos[0].id) }))
     }
-    if (!silent) setLoadingDia(true)
-    try {
-      const [cierresRes, preciosRes, regRes] = await Promise.all([
-        supabase
-          .from('cierres_caja')
-          .select(
-            'id, turno_id, total_consola_centimos, yape_centimos, openpay_centimos, ' +
-            'deposito_transferencia_centimos, corporacion_centimos, licitaciones_centimos, ' +
-            'particulares_centimos, chevron_centimos, serafinado_centimos, redondeo_centimos, ' +
-            'contaminacion_centimos, entregado_grifero_centimos, contabilizado_admin_centimos, ' +
-            'colaborador_id, dscto_vales_centimos'
-          )
-          .eq('fecha', fecha),
-        supabase.from('precios_diarios').select('*').eq('fecha', fecha).maybeSingle(),
-        supabase
-          .from('registro_ventas')
-          .select(
-            'id, turno_id, tipo_atencion, empresa_id, conductor, placa, serie, numero, ' +
-            'dni_conductor, tipo_combustible, cantidad_galones, precio_unit_centimos, ' +
-            'importe_centimos, importe_declarado_centimos, empresas_clientes(nombre)'
-          )
-          .eq('fecha', fecha)
-          .is('deleted_at', null)
-          .order('created_at'),
-      ])
-
-      // Precios: si no hay uno cargado exactamente para esta fecha, se hereda
-      // el más reciente anterior (el precio no cambia todos los días).
-      let preciosData = preciosRes.data
-      let esPrecioHeredado = false
-      if (!preciosData) {
-        const carried = await supabase
-          .from('precios_diarios')
-          .select('*')
-          .lt('fecha', fecha)
-          .order('fecha', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        preciosData = carried.data
-        esPrecioHeredado = !!carried.data
-      }
-
-      // Armar mapa turno_id → CierreRow
-      const map: Record<number, CierreRow> = {}
-      const dbCierres: any[] = (!cierresRes.error && Array.isArray(cierresRes.data)) ? cierresRes.data : []
-      for (const raw of dbCierres) {
-        map[raw.turno_id] = raw
-      }
-      setCierresMap(map)
-
-      // Precios del día (heredado: no se guarda un id propio hasta que se edite)
-      const pd = preciosData
-      if (pd) {
-        setPrecioId(esPrecioHeredado ? null : pd.id)
-        setPrecios({
-          db5: (pd.precio_db5_centimos / 100).toFixed(2),
-          regular: (pd.precio_regular_centimos / 100).toFixed(2),
-          premium: (pd.precio_premium_centimos / 100).toFixed(2),
-        })
-      } else {
-        setPrecioId(null)
-        setPrecios({ db5: '', regular: '', premium: '' })
-      }
-
-      // Registros de ventas
-      setRegistros(
-        ((regRes.data ?? []) as Record<string, any>[]).map(r => ({
-          ...r,
-          empresa_nombre: r.empresas_clientes?.nombre ?? null,
-        })) as any
-      )
-    } catch (err) {
-      console.error('Error al cargar datos del día:', err)
-    } finally {
-      if (!silent) setLoadingDia(false)
-    }
-  }, [fecha])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turnos])
 
   // ── Corregir fecha: mover todo lo registrado hoy a otra fecha ──
   // Solo permitido si el destino no tiene absolutamente ningún dato
   // (evita fusiones o sobrescrituras silenciosas de información real).
+  // Operación de reparación poco frecuente: se hace directo contra Supabase
+  // (mover 3 tablas por fecha con verificación del destino exige la vista
+  // completa del servidor, no la ventana local). Requiere conexión.
   async function handleFixDate() {
     if (!esFechaValida(fixDateTarget) || fixDateTarget === fecha) return
+    if (!navigator.onLine) {
+      alert('Corregir la fecha requiere conexión a internet.')
+      return
+    }
     setFixingDate(true)
     try {
       const [regCheck, cierreCheck, precioCheck] = await Promise.all([
@@ -466,6 +422,9 @@ export default function VentasPage() {
 
       setShowFixDate(false)
       setFixDateTarget('')
+      // Refleja el movimiento en la base local (el pull trae las filas con
+      // su fecha nueva; las viejas quedan pisadas por updated_at).
+      await sincronizarAhora()
       setFecha(fixDateTarget)
     } catch (err) {
       alert('Error al corregir la fecha: ' + (err as any).message)
@@ -480,15 +439,7 @@ export default function VentasPage() {
     if (esFechaValida(fecha)) sessionStorage.setItem(FECHA_KEY, fecha)
   }, [fecha])
 
-  useEffect(() => {
-    if (activeTab === 'registro') {
-      loadDia(false)
-    }
-  }, [fecha, activeTab, loadDia])
-
   // ── Reconstruir inputs editables (reactivo a cierres + turnos) ─
-  // Se separa de loadDia para no re-disparar la carga de red cuando
-  // llegan los turnos: eso causaba doble fetch y parpadeo al inicio.
   useEffect(() => {
     const activeTurnos = turnos.length > 0 ? turnos : [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }] as any[]
     const newInputsMap: Record<number, ShiftInputs> = {}
@@ -498,47 +449,34 @@ export default function VentasPage() {
     setInputsMap(newInputsMap)
   }, [cierresMap, turnos])
 
-  // ── Carga de datos del mes (Historial) ────────────────────────
-  const loadHistorial = useCallback(async () => {
-    setLoadingHistorial(true)
+  // ── Datos del mes (Historial) — lectura local + rescate remoto ─
+  const mesRango = useMemo(() => {
     const year = parseInt(selectedMonth.substring(0, 4))
     const month = parseInt(selectedMonth.substring(5, 7))
     const lastDay = new Date(year, month, 0).getDate()
-    const startDate = `${selectedMonth}-01`
-    const endDate = `${selectedMonth}-${String(lastDay).padStart(2, '0')}`
+    return {
+      startDate: `${selectedMonth}-01`,
+      endDate: `${selectedMonth}-${String(lastDay).padStart(2, '0')}`,
+    }
+  }, [selectedMonth])
 
-    try {
-      const { data, error } = await supabase
-        .from('cierres_caja')
-        .select(`
-          id,
-          turno_id,
-          fecha,
-          total_consola_centimos,
-          yape_centimos,
-          openpay_centimos,
-          deposito_transferencia_centimos,
-          corporacion_centimos,
-          licitaciones_centimos,
-          particulares_centimos,
-          chevron_centimos,
-          serafinado_centimos,
-          contaminacion_centimos,
-          redondeo_centimos,
-          entregado_grifero_centimos,
-          contabilizado_admin_centimos,
-          colaborador_id,
-          dscto_vales_centimos,
-          profiles:colaborador_id ( nombre )
-        `)
-        .gte('fecha', startDate)
-        .lte('fecha', endDate)
-        .order('fecha', { ascending: true })
-        .order('turno_id', { ascending: true })
+  // Meses fuera de la ventana hidratada (~35 días): se piden al servidor en
+  // segundo plano y quedan cacheados en Dexie. Sin conexión → se ve lo local.
+  useEffect(() => {
+    if (activeTab === 'historial') void asegurarRango(mesRango.startDate, mesRango.endDate)
+  }, [activeTab, mesRango])
 
-      if (error) throw error
+  const cierresMes = useLiveQuery(
+    () =>
+      activeTab === 'historial'
+        ? leerCierresRango(mesRango.startDate, mesRango.endDate)
+        : Promise.resolve(null),
+    [activeTab, mesRango]
+  )
+  const loadingHistorial = activeTab === 'historial' && cierresMes === undefined
 
-      const calculated: CierreRowCalculated[] = (data as any[] || []).map((raw) => {
+  const cierresHistorial = useMemo<CierreRowCalculated[]>(() => {
+    return (cierresMes ?? []).map((raw) => {
         const totalConsola = raw.total_consola_centimos ?? 0
         const dsctoVales = raw.dscto_vales_centimos ?? 0
         const creditos =
@@ -570,7 +508,7 @@ export default function VentasPage() {
           id: raw.id,
           turno_id: raw.turno_id,
           fecha: raw.fecha,
-          colaborador_nombre: raw.profiles?.nombre ?? '—',
+          colaborador_nombre: raw.colaborador_nombre,
           total_consola_centimos: totalConsola,
           yape_centimos: raw.yape_centimos,
           openpay_centimos: raw.openpay_centimos,
@@ -589,43 +527,27 @@ export default function VentasPage() {
           faltante_sobrante_centimos: faltanteSobrante,
         }
       })
-
-      setCierresHistorial(calculated)
-    } catch (err) {
-      console.error('Error al cargar historial:', err)
-    } finally {
-      setLoadingHistorial(false)
-    }
-  }, [selectedMonth])
-
-  useEffect(() => {
-    if (activeTab === 'historial') {
-      loadHistorial()
-    }
-  }, [selectedMonth, activeTab, loadHistorial])
+  }, [cierresMes])
 
   // ── Guardar precios (al salir del campo) ──────────────────────
+  // Escritura local instantánea; el sync la sube por detrás. El upsert es
+  // por fecha, así que da igual si el precio nació hoy o se corrige.
   async function savePrecios() {
     const db5 = toCentimos(precios.db5)
     const regular = toCentimos(precios.regular)
     const premium = toCentimos(precios.premium)
     if (!db5 && !regular && !premium) return
     setSavingPrecios(true)
-    const payload = {
-      fecha,
-      precio_db5_centimos: db5,
-      precio_regular_centimos: regular,
-      precio_premium_centimos: premium,
-      registrado_por: profile?.id,
+    try {
+      await upsertPrecioDiario(fecha, {
+        precio_db5_centimos: db5,
+        precio_regular_centimos: regular,
+        precio_premium_centimos: premium,
+        registrado_por: profile?.id ?? null,
+      })
+    } finally {
+      setSavingPrecios(false)
     }
-    if (precioId) {
-      await supabase.from('precios_diarios').update(payload).eq('id', precioId)
-    } else {
-      const { data } = await supabase
-        .from('precios_diarios').insert(payload).select('id').single()
-      if (data) setPrecioId(data.id)
-    }
-    setSavingPrecios(false)
   }
 
   // ── Precio diario por código de combustible ───────────────────
@@ -691,21 +613,15 @@ export default function VentasPage() {
     if (filas.length === 0 || reajustando) return
     setReajustando(true)
     try {
-      const errores = await Promise.all(
+      await Promise.all(
         filas.map(r => {
           const precio = precioDiario(r.tipo_combustible)
-          return supabase
-            .from('registro_ventas')
-            .update({
-              precio_unit_centimos: precio,
-              importe_centimos: Math.round(r.cantidad_galones * precio),
-            })
-            .eq('id', r.id)
+          return updateRegistroVenta(r.id, {
+            precio_unit_centimos: precio,
+            importe_centimos: Math.round(r.cantidad_galones * precio),
+          })
         })
       )
-      const fallo = errores.find(e => e.error)
-      if (fallo?.error) throw fallo.error
-      loadDia(true) // Refresco silencioso
     } catch (err) {
       alert('Error al reajustar los precios: ' + (err as any).message)
     } finally {
@@ -771,28 +687,20 @@ export default function VentasPage() {
 
     if (!colaboradorId) return
 
-    const payload = {
-      fecha,
-      turno_id: turnoId,
-      colaborador_id: colaboradorId,
-      total_consola_centimos: totalConsola,
-      yape_centimos: yape,
-      openpay_centimos: openpay,
-      deposito_transferencia_centimos: deposito,
-      dscto_vales_centimos: dsctoVales,
-      serafinado_centimos: serafinado,
-      redondeo_centimos: redondeo,
-      entregado_grifero_centimos: entregado,
-      contabilizado_admin_centimos: contabilizado,
-    }
-
     try {
-      if (existingCierre) {
-        await supabase.from('cierres_caja').update(payload).eq('id', existingCierre.id)
-      } else {
-        await supabase.from('cierres_caja').insert(payload)
-      }
-      loadDia(true) // Refresco silencioso
+      // Upsert local por (fecha, turno): instantáneo y a prueba de cortes.
+      await upsertCierreCaja(fecha, turnoId, {
+        colaborador_id: colaboradorId,
+        total_consola_centimos: totalConsola,
+        yape_centimos: yape,
+        openpay_centimos: openpay,
+        deposito_transferencia_centimos: deposito,
+        dscto_vales_centimos: dsctoVales,
+        serafinado_centimos: serafinado,
+        redondeo_centimos: redondeo,
+        entregado_grifero_centimos: entregado,
+        contabilizado_admin_centimos: contabilizado,
+      })
     } catch (err) {
       console.error('Error al guardar turno:', err)
     }
@@ -884,7 +792,7 @@ export default function VentasPage() {
     const precioUnit = precioDiario(nuevo.tipo_combustible)
 
     try {
-      const { error } = await supabase.from('registro_ventas').insert({
+      await insertRegistroVenta({
         fecha,
         turno_id: parseInt(nuevo.turno_id),
         colaborador_id: profile.id,
@@ -904,7 +812,6 @@ export default function VentasPage() {
         // que su variación de céntimos es invisible para el sistema.
         importe_declarado_centimos: null,
       })
-      if (error) throw error
 
       // Se conservan TURNO y PRODUCTO (y el tipo de atención) del registro
       // anterior a propósito: acelera el registro rápido de varios vales
@@ -915,7 +822,6 @@ export default function VentasPage() {
         tipo_atencion: p.tipo_atencion,
         tipo_combustible: p.tipo_combustible,
       }))
-      loadDia(true) // Refresco silencioso
       // Devolver el cursor al inicio de la fila (CLIENTE) para empezar el
       // siguiente registro sin usar el ratón.
       gridReg.editarCelda(FILA_NUEVA, COL_CLIENTE)
@@ -934,7 +840,7 @@ export default function VentasPage() {
     setSavingQuick(true)
 
     try {
-      const { error } = await supabase.from('registro_ventas').insert({
+      await insertRegistroVenta({
         fecha,
         turno_id: parseInt(quickTurno),
         colaborador_id: profile.id,
@@ -948,11 +854,14 @@ export default function VentasPage() {
         // el redondeo cuando la fila se complete con galones en COMPLETO.
         importe_declarado_centimos: toCentimos(monto),
         empresa_id: null,
+        serie: null,
+        numero: null,
+        conductor: null,
+        placa: null,
+        dni_conductor: null,
       })
-      if (error) throw error
 
       setQuickMonto('')
-      loadDia(true) // Refresco silencioso
     } catch (err) {
       alert('Error al registrar crédito rápido: ' + (err as any).message)
     } finally {
@@ -1005,27 +914,21 @@ export default function VentasPage() {
       galones === 0 ? importeCentimos : original.importe_declarado_centimos
 
     try {
-      const { error } = await supabase
-        .from('registro_ventas')
-        .update({
-          importe_declarado_centimos: importeDeclarado,
-          turno_id: parseInt(inputs.turno_id),
-          empresa_id: inputs.empresa_id || null,
-          tipo_atencion: tipoAtencion,
-          numero: inputs.numero || null,
-          placa: inputs.placa || null,
-          serie: inputs.serie || null,
-          conductor: inputs.conductor || null,
-          dni_conductor: inputs.dni_conductor || null,
-          tipo_combustible: inputs.tipo_combustible,
-          cantidad_galones: galones,
-          precio_unit_centimos: precioUnit,
-          importe_centimos: importeCentimos,
-        })
-        .eq('id', id)
-
-      if (error) throw error
-      loadDia(true) // Refresco silencioso
+      await updateRegistroVenta(id, {
+        importe_declarado_centimos: importeDeclarado,
+        turno_id: parseInt(inputs.turno_id),
+        empresa_id: inputs.empresa_id || null,
+        tipo_atencion: tipoAtencion,
+        numero: inputs.numero || null,
+        placa: inputs.placa || null,
+        serie: inputs.serie || null,
+        conductor: inputs.conductor || null,
+        dni_conductor: inputs.dni_conductor || null,
+        tipo_combustible: inputs.tipo_combustible,
+        cantidad_galones: galones,
+        precio_unit_centimos: precioUnit,
+        importe_centimos: importeCentimos,
+      })
     } catch (err) {
       alert('Error al guardar cambios: ' + (err as any).message)
     }
@@ -1036,12 +939,11 @@ export default function VentasPage() {
   // desde Seguimiento → Papelera. El trigger de auditoría lo registra.
   async function deleteRegistro(id: string) {
     if (!confirm('¿Seguro que desea eliminar este registro?')) return
-    const { error } = await supabase
-      .from('registro_ventas')
-      .update({ deleted_at: new Date().toISOString(), deleted_by: profile?.id ?? null })
-      .eq('id', id)
-    if (error) alert('Error al eliminar el registro: ' + error.message)
-    loadDia(true) // Refresco silencioso
+    try {
+      await softDeleteRegistroVenta(id, profile?.id ?? null)
+    } catch (err) {
+      alert('Error al eliminar el registro: ' + (err instanceof Error ? err.message : String(err)))
+    }
   }
 
   // ── GRID (modo Completo): selección, navegación y portapapeles ──

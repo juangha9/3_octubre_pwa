@@ -1,7 +1,10 @@
+import { useEffect } from 'react'
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/features/auth/useAuth'
+import { iniciarSync } from '@/lib/local/sync'
 import ThemeToggle from '@/components/ThemeToggle'
+import SyncBadge from '@/components/SyncBadge'
 import VentasPage from './ventas/VentasDelDiaPage'
 import CorporativoPage from './corporativo/CorporativoPage'
 import ComprasPage from './compras/ComprasPage'
@@ -23,6 +26,13 @@ export default function AdminLayout() {
   const { role } = useAuth()
   const esSuperadmin = role === 'superadmin'
   const navItems = NAV_ITEMS.filter((item) => esSuperadmin || !item.soloSuperadmin)
+
+  // Arranca el motor local-first (hidratación + outbox + pull periódico).
+  // Vive aquí porque las tablas espejo tienen RLS de admin: solo tiene
+  // sentido con una sesión de administración activa.
+  useEffect(() => {
+    iniciarSync()
+  }, [])
 
   async function handleLogout() {
     await supabase.auth.signOut()
@@ -50,6 +60,7 @@ export default function AdminLayout() {
           </NavLink>
         ))}
         <div className="ml-auto flex items-center gap-2">
+          <SyncBadge />
           <ThemeToggle />
           <button
             onClick={handleLogout}

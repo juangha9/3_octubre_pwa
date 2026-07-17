@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-12** (motor de hoja de cálculo extraído a `lib/useGridHoja.ts` y aplicado a las DOS tablas de Ventas; casillas numéricas blindadas; precio del día corregible sin ser retroactivo)
+Última actualización: **2026-07-16** (**LOCAL-FIRST fases 1-2 CONSTRUIDAS**: Ventas y Seguimiento leen/escriben en IndexedDB (Dexie) con outbox + sync worker + badge de estado; ⚠️ falta **aplicar la migración 016** para que el sync funcione — ver sección 2026-07-16)
 
 ## Módulos completados
 
@@ -103,6 +103,7 @@ metadata:
   - Se usa el Excel **EVPC** (`Ultimos-Precios-Registrados-EVPC.xlsx`, ~17k filas, estaciones de venta al público). Se descarga de la página SCOP → "Registro de últimos precios".
   - ⚠️ **El Excel y la web de OSINERGMIN (facilito) NO están sincronizados.** Facilito consulta una base viva; el Excel es un volcado. El 2026-07-10 la web listaba **13** grifos con Gasohol Regular en Miraflores y el Excel solo **12**: faltaba `GRUPO CONSTRUCTOR FAMEK S.A.C` (17.56, AV. PRO HOGAR N° 406). Se buscó `FAME`/`HOGAR`/`CONSTRUCTOR` en RAZON y DIRECCION en las 17k filas del Excel en vivo: **no existe en el archivo, en ningún distrito del país**. No es un bug del cron ni una variante de escritura. La app lo advierte en pantalla (nota de fuente en `OsinergminPage`).
   - **Facilito NO se puede consumir desde el servidor**: `buscadorEESS.jsp` hace POST a `PreciosCombustibleAutomotorAction.do` con un **token de reCAPTCHA v3** generado en el navegador. Usarlo exigiría derrotar el CAPTCHA → descartado (es la barrera anti-bot que pusieron a propósito, y el Excel es el canal que sí publican para consumo automático).
+    - ⚠️ **REVISADO 2026-07-14 — esta conclusión era incompleta.** El reCAPTCHA v3 gatea SOLO el **POST** del navegador; el MISMO action por **GET** devuelve los datos **sin token**. **Facilito SÍ es consumible server-side** y es más fresco que el Excel. NO se bypassea nada (es un GET a datos públicos). Endpoint, códigos y prueba de frescura en la **sesión 2026-07-14**.
   - **El otro archivo, `Ultimos-precios-registrados-DMAY.xlsx`, NO sirve para el ranking**: 532 filas, todas de actividad `DISTRIBUIDOR MAYORISTA DE COMBUSTIBLES LIQUIDOS`. Son los **mayoristas que nos venden**, no la competencia (ni ALEXMATH ni FAMEK aparecen). 💡 Candidato para el **Cotizador de Compras** como referencia de precio mayorista.
 - **UNA sola Edge Function `osinergmin-cron`** hace TODO en el servidor (descarga + parseo + ranking + guardado) con lector liviano **fflate + lectura directa del XML**. Se usó fflate porque SheetJS con 17k filas revienta el edge (**error 546 WORKER_LIMIT**); el lector liviano es ~120–200ms y está validado como idéntico a SheetJS. La disparan los dos caminos:
   - **Manual** (botón "Actualizar precios ahora"): el navegador invoca `osinergmin-cron` como **superadmin** (~5s). Antes se descargaba y parseaba en el navegador con `xlsx` (~20s); **se eliminó** ese rodeo, la función `osinergmin-update` y la dependencia `xlsx` (2026-07-05 parte 2, unificación).
@@ -306,6 +307,118 @@ Cambios en **`tailwind.config.ts`** o en la definición de **variables/tema en `
    para que este no revierta).
 
 - `npx tsc --noEmit` y `npm run build` en verde. **Sin migraciones**: todo es frontend.
+
+## Cambios de esta sesión (2026-07-14)
+
+### OSINERGMIN — diagnóstico del "ranking desfasado" + recon de fuente en vivo (Facilito)
+
+**Motivo**: el usuario reportó que un cambio de precio registrado en el Excel el 13/07 11:18 (`FCHA_REGISTRO`; nuestro grifo bajó a **S/18.99 = #1** en Diesel B5) recién se reflejó en la app el **14/07 05:00** (~18 h después), pese al cron horario. Y que el gráfico muestra varios puntos el mismo día "a intervalos aleatorios".
+
+1. **El desfase NO es bug del ranking — es latencia del Excel EVPC.** `FCHA_REGISTRO` = cuándo el grifo declaró el precio al sistema **vivo** de OSINERGMIN, NO cuándo entra al Excel que descargamos. El Excel EVPC es un **volcado batch** que OSINERGMIN regenera ~1 vez al día de madrugada; el cron horario solo ve el cambio tras esa regeneración (por eso apareció justo en la corrida de las 05:00). La lógica de detección (huella del Top 10) **sí** habría capturado el cambio si el Excel lo trajera. Además: `fecha_datos_excel` se guarda como `new Date()` (día de la corrida, **no** del contenido del Excel) y `FCHA_REGISTRO` se descarta tras desempatar → la app **no tiene forma de saber cuán viejo está el Excel**.
+2. **Los "varios puntos el mismo día" tampoco son bug.** Dos mecanismos: (a) se crea snapshot cuando cambia la **huella**, que cubre TODO el Top 10 de los 3 productos + los conteos → un competidor que mueve su precio genera snapshot aunque nuestro puesto no cambie; (b) el **eje X del gráfico es por índice, no por tiempo** (`x(i)=ml+band*(i+0.5)` en `OsinergminPage`), así que varios snapshots del mismo día se reparten en franjas iguales y la etiqueta DD/MM se repite. El tooltip sí trae la hora.
+
+**Recon "Opción A" — consumir Facilito en vivo desde el servidor (ÉXITO):**
+- **La web de Facilito (`www.facilito.gob.pe`, app Struts/JSP) SÍ se consume server-side por GET, SIN reCAPTCHA.** El reCAPTCHA v3 (site key `6Le5C4cfAAAAABbO98BHMzZKAUVimVJSzcKrbK03`, action `PreciosCombustibleAutomotorAction`) gatea **solo el POST** del navegador; el mismo action por **GET** devuelve los datos igual. Esto **corrige** la conclusión del 2026-07-10 (bloque "FUENTE DE DATOS", ya anotado ahí).
+- **Endpoint (probado en vivo)**:
+  ```
+  GET https://www.facilito.gob.pe/facilito/actions/PreciosCombustibleAutomotorAction.do
+      ?method=cambiarProducto
+      &departamento=<D>&departamentoAux=<D>&provincia=<P>&distrito=<Dist>&producto=<40|126|127>
+  ```
+  - Métodos del cascade en el MISMO action: `inicio` (provincias), `cambiarProvincia` (distritos), `cambiarProducto`/`cambiarDistrito` (tabla de precios).
+  - **Códigos**: departamento = INEI×10000 (**Arequipa=`40000`**); provincia (**Arequipa=`40100`**); distrito (**Miraflores=`40110`**); **producto: `40`=Diesel B5, `126`=Gasohol Regular, `127`=Gasohol Premium**. Charset **Cp1252**.
+  - Devuelve tabla HTML **ordenada por precio ascendente** (= el orden de ranking de OSINERGMIN): distrito, razón social, dirección, teléfono, **precio**; y el **`CODIGO_OSINERG` de cada fila en `irMapa('<codigo>')`**. **NO trae RUC ni `FCHA_REGISTRO`.**
+  - Alternativa estructurada: `MapaAction.do?...&method=mostrarMapa` expone por establecimiento `codigoOsinergmin`, `precioVenta`, lat/long.
+- **Frescura PROBADA** (con corrección de identidad, ver ⚠️ abajo): nuestro grifo es **GRIFO ALEXMATH (código `21728`)** — verificado 2026-07-15: sus precios DB5 19.56 / Regular 17.28 / Premium 18.28 calzan **exacto** con el tooltip del snapshot del 14/07 05:00. El **13/07 11:18 un competidor**, **ESTACIÓN DE SERVICIOS ARAGON (código `34453`)**, registró **S/18.99** y nos arrebató el #1 de Diesel B5; el Excel recién reflejó nuestra caída a #2 el 14/07 05:00 (~18 h después). La web además lista **GRUPO CONSTRUCTOR FAMEK (código `186001`)** que el Excel no traía. Los códigos coinciden **exactos** con la columna `CODIGO_OSINERG` del Excel (21728, 34453, 6949, 8165, 8245, 149204, 8812, 84478, 8307, 8543, 9269, 16593 + el extra 186001).
+  - ⚠️ **Ojo (corregido 2026-07-15)**: en el primer borrado de esta sesión etiqueté por error el código `34453` (ARAGON) como "nuestro grifo". **NO**: `34453` es un competidor; **el nuestro es `21728` (ALEXMATH)**. El RUC configurado en `app_config` ya apunta a ALEXMATH (por eso las tarjetas de la app siempre calzaron con 21728).
+
+**Adaptación cuando se implemente (aún NO hecho):**
+- Identificar NUESTRO grifo por **`CODIGO_OSINERG` = `21728` (GRIFO ALEXMATH)**, no por RUC (la web no trae RUC) — más preciso (es el establecimiento, que es justo lo que compite). Guardar el código en `app_config` (junto al RUC actual).
+- **Confiar en el orden de filas de la página** (es el orden canónico de OSINERGMIN) → nuestro puesto = posición de nuestro código. No hace falta el desempate por `FCHA_REGISTRO` (que la web no da).
+- 3 GET por corrida (uno por producto) para nuestro distrito. Encaja en `osinergmin-cron`: se reemplaza `parseXlsx` por fetch+parse de HTML; **la lógica de ranking/dedup/snapshot se reutiliza**.
+
+**Advertencias:**
+- El GET-sin-token es **incidental** (gatearon el POST, no el GET) → podrían cerrarlo sin aviso. Como es crítico → **fuente primaria = Facilito, fallback automático = Excel + `aviso`** si Facilito falla o cambia de formato.
+- Endpoint no documentado de datos públicos: consumir con **cortesía** (por hora, sin golpear).
+- **Datos Abiertos** (datosabiertos.gob.pe) se descartó de plano: su dataset de precios es **mensual**, peor que el Excel.
+
+**Siguiente paso:** montar un **spike de validación** — Edge Function que baje Miraflores 40/126/127 por este endpoint, calcule el ranking y lo muestre **lado a lado** con el del Excel unos días; si cuadra, cambiar la fuente. Evaluar también añadir **push al admin cuando cambie su puesto** (el valor real para "reaccionar a cambios de ranking"). → **HECHO 2026-07-15, ver abajo.**
+
+## Cambios de esta sesión (2026-07-15)
+
+### OSINERGMIN — spike de validación de fuente (Facilito en vivo vs Excel) CONSTRUIDO
+
+Objetivo: comparar unos días, **sin tocar producción**, el ranking de la fuente en vivo (Facilito) contra el snapshot del Excel, para decidir si cambiamos la fuente del cron.
+
+- **Nueva Edge Function `osinergmin-spike`** (`supabase/functions/osinergmin-spike/index.ts`), **read-only** (no escribe nada): baja los 3 productos de Miraflores por GET (stateless, un GET por producto), parsea la tabla, calcula NUESTRO puesto por posición del código `21728`, lee el **último snapshot** de `osinergmin_snapshots`/`osinergmin_top10` (el lado Excel) y devuelve un **diff por producto** (¿coincide puesto?/¿precio?/notas) + la antigüedad del snapshot. Misma auth que el cron (`x-cron-secret` o sesión superadmin); CORS + OPTIONS; `verify_jwt=false` en `config.toml`.
+  - Parser validado en vivo (node, contra el HTML real): los 3 productos parsean 13 establecimientos, **todos ascendentes**, y sitúan a ALEXMATH (21728) en **DB5 #1 / Regular #4 / Premium #3** hoy (ARAGON subió su DB5 de 18.99 a 19.99 → volvimos a #1). Regex de fila: `irMapa\('(\d+)'…<td>razón…<td>dirección…<td>teléfono…align="center">precio`. Decodifica **Windows-1252** con `TextDecoder`.
+  - **Supuesto clave que valida el propio spike**: se confía en el **orden de la página** (ascendente = orden canónico de OSINERGMIN, con su desempate). La función marca `ordenado_por_precio:false` si algún día no viniera ascendente.
+- **Panel temporal solo-superadmin** en `OsinergminPage`: `SpikeFacilitoPanel.tsx` (botón "Comparar ahora" → invoca la función; muestra por producto dos mini-tablas **Facilito | Excel** con nuestra fila resaltada y un badge coincide/difiere). Montado al fondo de la página tras `{esSuperadmin && …}`. `npx tsc -p tsconfig.app.json --noEmit` en verde.
+
+**Para probarlo (pendiente, requiere credenciales que no tengo aquí):**
+1. Desplegar: `npx supabase functions deploy osinergmin-spike --project-ref acvavpzdeichdvsgblcn --no-verify-jwt` (con `$env:SUPABASE_ACCESS_TOKEN` y `Set-ExecutionPolicy -Scope Process Bypass`, igual que el cron).
+2. Reiniciar Vite (hay componente nuevo) y entrar a OSINERGMIN como **superadmin** → "Comparar ahora".
+3. Observar unos días: donde difieran, la diferencia debe explicarse por **latencia del Excel** (el snapshot viejo) o por grifos que el Excel no trae (FAMEK). Si el lado Facilito es consistentemente correcto y más fresco → cambiar la fuente de `osinergmin-cron`.
+
+**Al terminar la validación**: borrar la función `osinergmin-spike`, su bloque en `config.toml`, `SpikeFacilitoPanel.tsx` y su import/uso en `OsinergminPage`.
+
+**Productionizar (cuando se apruebe la fuente):** en `osinergmin-cron`, reemplazar `fetch`+`parseXlsx` del Excel por el fetch+parse de Facilito (3 GET, uno por producto); identificar nuestro grifo por `CODIGO_OSINERG` (guardar `21728` en `app_config`); mapear la zona a los códigos Facilito (40000/40100/40110) o guardarlos en config; **mantener el Excel como fallback + `aviso`** si Facilito falla/cambia. La lógica de dedup/snapshot/Top-10 se reutiliza igual.
+
+### Desplegado y en observación + aclaraciones de diseño (2026-07-15)
+- **`osinergmin-spike` DESPLEGADO y funcionando**: el usuario lo desplegó (CLI con token) y el panel muestra las tablas comparativas Facilito | Excel. **Acordado: observar 2 días** con clics manuales antes de decidir el cambio de fuente. Si se quiere registro automático, se agregaría una tablita de log + cron horario propio del spike (aún NO hecho).
+- **Aclaraciones de arquitectura (para no re-explicar en futuras sesiones):**
+  - La data NO la trae el navegador: la trae la **Edge Function** (servidor). Cadena: navegador → función en Supabase → GET a Facilito → parseo → JSON. Desde el navegador Facilito bloquearía por CORS.
+  - **Multi-grifo**: para otro grifo hacen falta 4 datos hoy hardcodeados que deberían ir en `app_config`: los **3 códigos de zona** de Facilito + el **`CODIGO_OSINERG`** del grifo (identificación por establecimiento, no por RUC).
+  - **Fragilidad**: es scraping de HTML no documentado; si Facilito cambia el maquetado/endpoint, el regex devuelve 0 filas o basura → producción debe llevar chequeo "0 filas = error" + **Excel como fallback + `aviso`**. Si se rompe, es arreglo de código (regex/params).
+  - **Poll, no push**: OSINERGMIN no da API/webhook, no nos avisa. Nos enteramos al **consultar** (poll, hoy cada hora). Internamente sí somos responsivos: el cron detecta el cambio (huella) y **Realtime lo empuja al navegador**. Única palanca de frescura = el intervalo de consulta (se puede bajar a 30/15 min).
+
+## EN PLANIFICACIÓN (2026-07-15): OCR de reportes de consola → cuadre de caja
+
+> **Plan detallado en [`PLAN-cuadre-consola-y-localfirst.md`](PLAN-cuadre-consola-y-localfirst.md)** (documento de diseño vivo, armado 2026-07-15). Vive en **Ventas** (ahí ocurre el cuadre). Resumen abajo.
+
+- **Qué**: leer los reportes que imprime la **consola** (controlador de playa) desde **screenshots** (el PDF/Excel que exporta es solo-ventas y más extenso → no conviene). Reportes: **REPORTE PRODUCTO** (por producto: Ventas/Volumen/Importe + fila **RSM = total**, sirve de auto-validación) y **REPORTE STOCK** (por tanque: Inicio/Final; tanque 1=DB5, 2=G.REG, 3=G.PRE).
+- **Imágenes/día (objetivo)**: **~6** — 4 por turno (ventas del turno) + 2 generales del día (stock del día + ventas consolidadas del día). **Hoy son solo 2/día.** ⚠️ **RECORDATORIO pedido por el usuario**: en el futuro este proceso de screenshots *se simplificará más* — recordárselo al retomar.
+- **Captura**: la sube el **admin del grifo al día siguiente** para cuadrar lo de ayer. Se guarda la imagen en **Supabase Storage en WebP** (~50–200 KB c/u → free tier alcanza ~años; se guarda para auditoría).
+- **Qué se guarda**: **todo el historial de ventas por turno**. El **stock** es referencia PERO también se guarda y **se compara contra el varillaje** para detectar variaciones / posibles **descalibraciones** de tanque.
+- **Uso en el cuadre**: **autocompletar el total** del turno = `importe_declarado_centimos` (hoy tecleado a mano), **editable** (líos reales: dos turnos que son uno, relevo que llega tarde → mismo turno/cierre; la app propone, el humano decide). Toda **edición manual del total de consola dispara una alerta al superadmin** (reutiliza el audit `registro_ventas_log`).
+- **Motor de lectura** (dos caminos):
+  - **Online (principal)**: LLM multimodal (Gemini 2.5 Flash o Claude vision) → **JSON estricto**. Inmune a la escala/marco del screenshot; una pasada lee ambos reportes. Validaciones cruzadas (filas suman RSM; `Importe ≈ Volumen × precio`) para cazar errores de un dígito. Ojo formato peruano (coma miles, punto decimal, volúmenes 3 decimales).
+  - **Offline**: NO YOLO. **Template matching** (anclar por el encabezado/título, robusto a más/menos marco; **multi-escala** por si cambian monitor/resolución) + **Tesseract con whitelist numérica**. Corre client-side (WASM) en la PWA.
+- **YOLO descartado**: la UI de consola es fija → no hace falta detección entrenada ni reentrenar cada mes; calidad = validaciones cruzadas + confirmación humana, no un modelo que mantener.
+- **Local-first**: **DECIDIDO hacerlo desde ya** (fase 1 del plan) para Ventas + Seguimiento — IndexedDB (Dexie) + cola de sync; ~30 días en local; ~200 filas/día. Da **escritura instantánea** (sin latencia de red: hoy ~cientos de ms por el viaje a Supabase → ~1-5 ms local) y resiliencia ante caídas de internet **y** de Supabase. ⚠️ Acoplamiento: el total de consola alimenta el cuadre → por eso el OCR offline (WASM) va como última fase, **sobre** la base local-first, no antes.
+- **Fases** (detalle en el plan): 1) fundación local-first en Ventas · 2) local-first en Seguimiento · 3) datos+captura de consola · 4) extracción online (LLM)+autocompletado+alerta · 5) stock vs varillaje · 6) OCR offline (WASM). **Orden DECIDIDO 2026-07-15**: local-first (fases 1-2) primero, luego el OCR.
+- **LLM (fase 4)**: costo trivial a ~180 img/mes (Haiku 4.5 ~$0.5–1/mes, Sonnet 5 ~$1.5–2, Opus 4.8 ~$3) → elegir por precisión. ⚠️ **Privacidad**: API de pago de Claude NO entrena con tus datos; Gemini **gratis** (AI Studio) SÍ → usar Claude API o Gemini de pago, nunca el gratis. **Money-critical**: Supabase = fuente de verdad + validaciones/alertas server-side; estado de sync visible; conflictos de dinero resueltos explícito (no LWW silencioso).
+
+## Cambios de esta sesión (2026-07-16) — LOCAL-FIRST FASES 1 y 2 CONSTRUIDAS
+
+**Ventas y Seguimiento ahora son local-first** (plan `PLAN-cuadre-consola-y-localfirst.md`, fases 1-2). La UI lee y escribe SIEMPRE en IndexedDB (Dexie) → respuesta instantánea y funcionamiento sin internet; un worker replica contra Supabase (que sigue siendo la fuente de verdad).
+
+### Motor nuevo — `src/lib/local/` (genérico: extender otro módulo = registrar tablas + migrar sus lecturas/escrituras)
+- **`db.ts`** — Dexie `grifo-local`: espejos de `registro_ventas`, `cierres_caja`, `precios_diarios` + catálogos (`turnos`, `empresas_clientes`, `tipos_combustible`, `profiles`) + `outbox` (cola FIFO de mutaciones) + `meta` (cursores de pull).
+- **`sync.ts`** — worker: **flush** del outbox en orden estricto (error de red → reintenta al reconectar/tick de 45 s; rechazo real del servidor → bloquea la cola y se muestra en rojo, nunca se descarta plata en silencio); **hidratación** inicial ~35 días; **pull incremental** por `updated_at` (LWW: el servidor pisa lo local SALVO filas con cambios aún en cola); `asegurarRango()` para rangos históricos bajo demanda (quedan cacheados); catálogos con reemplazo-solo-si-cambió (evita re-emitir liveQuerys y pisar celdas a medio tipear — igual los merges saltan filas con `updated_at` idéntico). `iniciarSync()` arranca en `AdminLayout` (RLS admin).
+- **`repo.ts`** — API tipada: `insertRegistroVenta` (uuid generado en cliente → id definitivo aun offline), `updateRegistroVenta`, `softDelete/restaurarRegistroVenta`, `upsertCierreCaja` (por **clave natural fecha+turno**, sin id en el payload → el pull reconcilia ids), `upsertPrecioDiario` (por fecha), y lecturas para `useLiveQuery`: `leerDia`, `leerCierresRango`, `leerRegistrosRango`, `leerCatalogos` (joins de nombres hechos localmente). Escritura local + entrada de outbox en LA MISMA transacción Dexie.
+- **`useSyncStatus.ts`** + **`components/SyncBadge.tsx`** — badge en la barra superior: verde=sincronizado, ámbar=sin conexión/pendientes, rojo=rechazo del servidor (tooltip con el error); clic = sincronizar ya.
+
+### Migración de las páginas
+- **`VentasDelDiaPage`** (fase 1): `loadDia`/`loadHistorial` eliminados → `useLiveQuery(leerDia(fecha))` y `leerCierresRango(mes)`; todas las mutaciones van por el repo (cierres→upsert natural, precios→upsert por fecha — ya no hace falta `precioId`, la herencia del precio anterior se resuelve local). "Corregir fecha" sigue **online-only** (reparación rara que exige vista completa del servidor; avisa si no hay conexión y re-sincroniza al terminar).
+- **`CorporativoPage`** (fase 2): rango DESDE→HASTA desde Dexie + `asegurarRango` en segundo plano; alta/edición/pago/papelera/restaurar por el repo. El **historial de auditoría** (`registro_ventas_log`) sigue online-only (vive solo en el servidor, correcto así).
+- **`AuthContext`**: perfil cacheado en localStorage (`grifo-profile-cache`) → la app arranca sin internet con sesión persistida (solo si el id coincide con la sesión).
+
+### Migración BD — **`016_localfirst_sync.sql` — ✅ APLICADA (2026-07-16, confirmado por el usuario)**
+- `updated_at` + trigger en `registro_ventas` y `precios_diarios` (cierres ya lo tenía) + índices → pull incremental y LWW.
+- **UNIQUE (fecha, turno_id) en `cierres_caja`** (con dedup previo conservando el más reciente) → los upserts offline no duplican cierres.
+- Sin aplicar: el pull de esas tablas falla (columna inexistente) y el upsert de cierres se bloquea (falta el índice del onConflict) → badge rojo.
+
+### Verificado en vivo + próximo paso
+- **Probado por el usuario (2026-07-16)**: offline → 7 registros encolados (badge ámbar "7 por enviar"); al volver online la cola se vació sola → badge verde. Fix aplicado en la sesión: catálogos memoizados (`useMemo` sobre `catalogos`) en Ventas y Seguimiento — el `?? []` sin memo creaba un array nuevo por render y el efecto de `inputsMap` entraba en bucle ("Maximum update depth exceeded").
+- **PRÓXIMO PASO acordado**: el usuario sigue probando (llegada real a Supabase, pull inverso); si todo bien → **continuar con las fases 3+ del plan** (tablas `consola_*` + Storage + UI de carga, luego OCR con LLM).
+
+### Notas
+- **Cadencia del sync — DECIDIDO (2026-07-16): poll cada 45 s** (`INTERVALO_MS` en `sync.ts`), no Realtime. Razón: un solo admin hace el cuadre → lo que ve en pantalla es lo que él mismo teclea (reflejado en ms desde Dexie); el pull solo cubre el caso raro de ediciones desde otro dispositivo/dashboard, donde 45 s de retraso es irrelevante. OJO: el **push es instantáneo** (cada guardado dispara el envío; el tick de 45 s es solo reintento de respaldo + pull). Si algún día hay cuadre multi-usuario real → agregar suscripción **Realtime → Dexie** (la UI ya reacciona sola vía `useLiveQuery`, no habría que tocar las páginas). Bajar el intervalo = cambiar un número.
+- **`navigator.storage.persist()`** se pide al arrancar el sync (2026-07-16): blinda IndexedDB (datos + outbox) contra el desalojo automático del navegador con disco lleno. Si el navegador lo niega, todo funciona igual (se loguea en consola).
+- Deps nuevas: `dexie`, `dexie-react-hooks`. `tsc -b` y `npm run build` (PWA incluida) en verde. La PWA ya precacheaba el app shell (vite-plugin-pwa) → con esto la app **carga y opera** offline.
+- Comportamiento offline esperado: escribir funciona siempre (cola ámbar con contador); al volver la conexión se vacía sola. Conflicto real (dos dispositivos editan lo mismo offline) → gana el último en llegar (LWW), rastro en `registro_ventas_log`.
+- Pendiente natural: fases 3-6 del plan (captura de consola + OCR); extender local-first a Compras/Varillaje si se quiere (el motor ya es genérico).
 
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.

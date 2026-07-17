@@ -1,12 +1,24 @@
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import type { ReactNode } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
 import { supabase } from '@/lib/supabase'
 import { formatSoles, toCentimos } from '@/lib/money'
 import { hoyLocal } from '@/lib/date'
 import { usePersistedState } from '@/lib/usePersistedState'
 import { useAuth } from '@/features/auth/useAuth'
+// Local-first: lecturas y escrituras van contra la base local (Dexie);
+// el worker de sync replica a Supabase. Solo la auditoría (historial de
+// cambios) sigue siendo online: vive únicamente en el servidor.
+import {
+  leerCatalogos,
+  leerRegistrosRango,
+  insertRegistroVenta,
+  updateRegistroVenta,
+  softDeleteRegistroVenta,
+  restaurarRegistroVenta,
+} from '@/lib/local/repo'
+import { asegurarRango } from '@/lib/local/sync'
 import MultiSelectDropdown from '@/components/MultiSelectDropdown'
-import type { EmpresaCliente, Turno, TipoCombustible } from '@/types'
 
 // ─── Tipos ────────────────────────────────────────────────────────
 
@@ -83,6 +95,9 @@ const TIPO_LABELS: Record<string, string> = {
   particular: 'Particular',
   chevron: 'Chevron',
 }
+
+/** Mensaje legible de un error desconocido (catch de unknown). */
+const msgDe = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
 const FORM_INIT: FormState = {
   fecha: '', empresa_id: '', tipo_atencion: 'corporativo',
@@ -253,12 +268,13 @@ export default function CorporativoPage() {
   // calendario de "hasta" (flujo del botón 📅).
   const encadenarHastaRef = useRef(false)
 
-  const [rows, setRows] = useState<RegistroRow[]>([])
-  const [loading, setLoading] = useState(false)
-
-  const [empresas, setEmpresas] = useState<EmpresaCliente[]>([])
-  const [turnos, setTurnos] = useState<Turno[]>([])
-  const [combustibles, setCombustibles] = useState<TipoCombustible[]>([])
+  // Catálogos: espejo local (Dexie) mantenido por el worker de sync.
+  // Memoizados para que su identidad no cambie en cada render (los
+  // useMemo/useEffect que dependen de ellos entrarían en bucle).
+  const catalogos = useLiveQuery(leerCatalogos, [])
+  const empresas = useMemo(() => catalogos?.empresas ?? [], [catalogos])
+  const turnos = useMemo(() => catalogos?.turnos ?? [], [catalogos])
+  const combustibles = useMemo(() => catalogos?.combustibles ?? [], [catalogos])
 
   // Alta de registros (modal) y edición EN LÍNEA (editId ≠ null resalta la fila)
   const [showModal, setShowModal] = useState(false)
@@ -273,59 +289,26 @@ export default function CorporativoPage() {
   const [histLoading, setHistLoading] = useState(false)
   const [perfiles, setPerfiles] = useState<Record<string, string>>({})
 
-  // Carga catálogos una vez
+  // Registros del rango DESDE → HASTA (activos o papelera), en vivo desde
+  // Dexie. Los cambios (propios o del pull del servidor) refrescan solos.
+  const rowsLive = useLiveQuery(
+    () => leerRegistrosRango(desde, hasta, vista),
+    [desde, hasta, vista]
+  )
+  const loading = rowsLive === undefined
+  const rows: RegistroRow[] = useMemo(() => rowsLive ?? [], [rowsLive])
+
+  // Rangos fuera de la ventana hidratada (~35 días): se piden al servidor
+  // en segundo plano y quedan cacheados. Sin conexión → se ve lo local.
   useEffect(() => {
-    Promise.all([
-      supabase.from('empresas_clientes').select('*').eq('activo', true).order('nombre'),
-      supabase.from('turnos').select('*').eq('activo', true).order('id'),
-      supabase.from('tipos_combustible').select('*').eq('activo', true).order('nombre'),
-    ]).then(([e, t, c]) => {
-      setEmpresas(e.data ?? [])
-      setTurnos(t.data ?? [])
-      setCombustibles(c.data ?? [])
-    })
-  }, [])
+    void asegurarRango(desde, hasta)
+  }, [desde, hasta])
 
-  // Carga registros del rango DESDE → HASTA (activos o papelera)
-  async function loadDatos() {
-    setLoading(true)
-    setEditId(null) // recargar cancela cualquier edición en curso
-    try {
-      let query = supabase
-        .from('registro_ventas')
-        .select(
-          'id, fecha, turno_id, empresa_id, tipo_atencion, ' +
-          'serie, numero, conductor, placa, dni_conductor, ' +
-          'tipo_combustible, cantidad_galones, precio_unit_centimos, importe_centimos, ' +
-          'empresa_facturacion, factura_numero, fecha_facturacion, estado_pago, fecha_pago, ' +
-          'deleted_at, empresas_clientes(nombre), turnos(nombre)'
-        )
-        .gte('fecha', desde).lte('fecha', hasta)
-        .order('fecha', { ascending: false })
-        .order('created_at', { ascending: false })
-
-      // Soft delete: los "eliminados" siguen en la tabla con deleted_at
-      // marcado; la papelera los muestra y permite restaurarlos.
-      query = vista === 'papelera'
-        ? query.not('deleted_at', 'is', null)
-        : query.is('deleted_at', null)
-
-      const regRes = await query
-      setRows(
-        ((Array.isArray(regRes.data) ? regRes.data : []) as Record<string, any>[]).map(r => ({
-          ...r,
-          empresa_nombre: (r.empresas_clientes as any)?.nombre ?? null,
-          turno_nombre: (r.turnos as any)?.nombre ?? null,
-        })) as RegistroRow[]
-      )
-    } catch (err) {
-      console.error('Error al cargar registros:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { loadDatos() }, [desde, hasta, vista]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Cambiar de rango/vista cancela cualquier edición en curso (antes lo
+  // hacía la recarga de red).
+  useEffect(() => {
+    setEditId(null)
+  }, [desde, hasta, vista])
 
   // Rango coherente: si el usuario cruza las fechas, se corrige la otra.
   function cambiarDesde(v: string) {
@@ -463,7 +446,10 @@ export default function CorporativoPage() {
 
   async function handleSave() {
     const galones = parseFloat(form.cantidad_galones) || 0
-    if (!galones || !form.precio_unit || !form.tipo_combustible) return
+    // turno_id es NOT NULL en la BD: se valida aquí para que el rechazo no
+    // llegue diferido desde el sync (antes lo devolvía la red al instante).
+    const turnoNum = parseInt(form.turno_id)
+    if (!galones || !form.precio_unit || !form.tipo_combustible || !turnoNum || !profile) return
     setSaving(true)
     const precioCentimos = toCentimos(form.precio_unit)
     const importeCentimos = Math.round(galones * precioCentimos)
@@ -473,7 +459,7 @@ export default function CorporativoPage() {
       tipo_atencion: form.tipo_atencion,
       serie: form.serie.trim() || null,
       numero: form.numero.trim() || null,
-      turno_id: parseInt(form.turno_id) || null,
+      turno_id: turnoNum,
       conductor: form.conductor.trim() || null,
       placa: form.placa.trim() || null,
       dni_conductor: form.dni_conductor.trim() || null,
@@ -487,54 +473,60 @@ export default function CorporativoPage() {
       estado_pago: form.estado_pago,
       fecha_pago: form.fecha_pago || null,
     }
-    // El insert exige colaborador_id y tipo_documento (NOT NULL en
-    // registro_ventas); en el update NO se mandan, para conservar al creador
-    // original y no tocar un tipo_documento que la interfaz ya no expone.
-    const { error } = editId === null
-      ? await supabase
-          .from('registro_ventas')
-          .insert({ ...body, colaborador_id: profile?.id, tipo_documento: TIPO_DOC_FIJO })
-      : await supabase.from('registro_ventas').update(body).eq('id', editId)
-    setSaving(false)
-    if (error) {
-      alert('Error al guardar el registro: ' + error.message)
+    try {
+      // El insert exige colaborador_id y tipo_documento (NOT NULL en
+      // registro_ventas); en el update NO se mandan, para conservar al creador
+      // original y no tocar un tipo_documento que la interfaz ya no expone.
+      if (editId === null) {
+        await insertRegistroVenta({
+          ...body,
+          colaborador_id: profile.id,
+          tipo_documento: TIPO_DOC_FIJO,
+          importe_declarado_centimos: null,
+        })
+      } else {
+        await updateRegistroVenta(editId, body)
+      }
+    } catch (err) {
+      setSaving(false)
+      alert('Error al guardar el registro: ' + msgDe(err))
       return
     }
+    setSaving(false)
     setShowModal(false)
     setEditId(null)
-    loadDatos()
   }
 
   async function togglePago(row: RegistroRow) {
     const nuevo = row.estado_pago === 'pagado' ? 'pendiente' : 'pagado'
-    const upd: Record<string, string | null> = { estado_pago: nuevo }
-    if (nuevo === 'pagado') upd.fecha_pago = hoyLocal()
-    else upd.fecha_pago = null
-    const { error } = await supabase.from('registro_ventas').update(upd).eq('id', row.id)
-    if (error) alert('Error al cambiar el estado de pago: ' + error.message)
-    loadDatos()
+    try {
+      await updateRegistroVenta(row.id, {
+        estado_pago: nuevo,
+        fecha_pago: nuevo === 'pagado' ? hoyLocal() : null,
+      })
+    } catch (err) {
+      alert('Error al cambiar el estado de pago: ' + msgDe(err))
+    }
   }
 
   // Soft delete: se marca deleted_at/deleted_by; el registro va a la papelera
   // (recuperable) y el trigger de auditoría deja constancia.
   async function confirmDelete() {
     if (!deleteId) return
-    const { error } = await supabase
-      .from('registro_ventas')
-      .update({ deleted_at: new Date().toISOString(), deleted_by: profile?.id ?? null })
-      .eq('id', deleteId)
-    if (error) alert('Error al eliminar: ' + error.message)
+    try {
+      await softDeleteRegistroVenta(deleteId, profile?.id ?? null)
+    } catch (err) {
+      alert('Error al eliminar: ' + msgDe(err))
+    }
     setDeleteId(null)
-    loadDatos()
   }
 
   async function restaurar(id: string) {
-    const { error } = await supabase
-      .from('registro_ventas')
-      .update({ deleted_at: null, deleted_by: null })
-      .eq('id', id)
-    if (error) alert('Error al restaurar: ' + error.message)
-    loadDatos()
+    try {
+      await restaurarRegistroVenta(id)
+    } catch (err) {
+      alert('Error al restaurar: ' + msgDe(err))
+    }
   }
 
   // ─── Historial de auditoría ────────────────────────────────────

@@ -55,12 +55,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   async function fetchProfile(userId: string) {
-    const { data } = await supabase
-      .from('profiles')
-      .select('id, nombre, rol, activo, created_at')
-      .eq('id', userId)
-      .single()
-    const p = (data as Profile) ?? null
+    // Local-first: sin internet (o con Supabase caído) la app debe poder
+    // arrancar igual. Si la consulta del perfil falla pero hay sesión
+    // persistida, se usa la última copia local del perfil.
+    const CACHE_KEY = 'grifo-profile-cache'
+    let p: Profile | null = null
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, nombre, rol, activo, created_at')
+        .eq('id', userId)
+        .single()
+      if (error) throw error
+      p = (data as Profile) ?? null
+      if (p) localStorage.setItem(CACHE_KEY, JSON.stringify(p))
+    } catch {
+      try {
+        const cached = localStorage.getItem(CACHE_KEY)
+        const parsed = cached ? (JSON.parse(cached) as Profile) : null
+        // Solo vale el caché del MISMO usuario de la sesión activa.
+        if (parsed && parsed.id === userId) p = parsed
+      } catch {
+        p = null
+      }
+    }
     profileRef.current = p
     setProfile(p)
     setLoading(false)
