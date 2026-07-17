@@ -5,6 +5,7 @@ import { usePersistedState } from '@/lib/usePersistedState'
 import { useTheme } from '@/lib/theme'
 import { hoyLocal } from '@/lib/date'
 import type { OsinergminSnapshot, OsinergminTop10 } from '@/types'
+import SpikeFacilitoPanel from './SpikeFacilitoPanel'
 
 const PRODUCTOS = [
   { code: 'DB5', label: 'Diesel B5' },
@@ -919,6 +920,9 @@ export default function OsinergminPage() {
           </table>
         </div>
       )}
+
+      {/* Panel de validación de fuente (Facilito en vivo vs Excel) — TEMPORAL, solo superadmin */}
+      {esSuperadmin && <SpikeFacilitoPanel />}
     </div>
   )
 }

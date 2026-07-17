@@ -6,3 +6,9 @@ project_id = "acvavpzdeichdvsgblcn"
 # CORS se rechaza).
 [functions.osinergmin-cron]
 verify_jwt = false
+
+# Spike de validación (TEMPORAL): compara Facilito en vivo vs el snapshot del
+# Excel. Lo dispara el superadmin desde el panel de OsinergminPage. Borrar junto
+# con la función cuando termine la validación de fuente.
+[functions.osinergmin-spike]
+verify_jwt = false
