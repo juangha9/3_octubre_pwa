@@ -11,9 +11,13 @@
 import {
   dbLocal,
   claveCierre,
+  claveReporte,
+  rutaImagen,
   type RegistroVentaLocal,
   type CierreCajaLocal,
   type PrecioDiarioLocal,
+  type ConsolaReporteLocal,
+  type ConsolaTipo,
   type OutboxEntry,
 } from './db'
 import { despuesDeEncolar } from './sync'
@@ -292,4 +296,198 @@ export async function leerRegistrosRango(
       empresa_nombre: r.empresa_id ? (nombreEmpresa.get(r.empresa_id) ?? null) : null,
       turno_nombre: nombreTurno.get(r.turno_id) ?? null,
     }))
+}
+
+// ═════════════════════ REPORTES DE CONSOLA ═══════════════════════
+// Dos imágenes por día (ventas + stock). Se pegan con Ctrl+V, se leen
+// con OCR local y de la de ventas sale el TOTAL CONSOLA del día.
+
+export interface LineaProducto {
+  producto: 'DB5' | 'PREMIUM' | 'REGULAR'
+  ventas: number | null
+  volumen_gl: number | null
+  importe_centimos: number | null
+}
+
+export interface LineaStock {
+  tanque_num: number
+  tanque_id: number | null
+  producto: string | null
+  inicio_gl: number | null
+  final_gl: number | null
+}
+
+export interface DatosReporte {
+  ventas_total: number | null
+  volumen_total_gl: number | null
+  importe_total_centimos: number | null
+  validacion_ok: boolean | null
+  fuente: ConsolaReporteLocal['fuente']
+  productos?: LineaProducto[]
+  stock?: LineaStock[]
+  extraido?: Record<string, unknown> | null
+  /** Periodo leído del encabezado (migración 019). */
+  periodo?: {
+    inicio: string | null
+    fin: string | null
+    solicitud: string | null
+    fecha: string | null
+  }
+}
+
+/**
+ * Guarda (o reemplaza) el reporte de un día y encola las dos mutaciones
+ * que necesita: subir la imagen a Storage y escribir cabecera + líneas.
+ *
+ * El orden en la cola importa y es FIFO: primero sube el binario, después
+ * la fila que lo referencia, para que `imagen_path` nunca apunte a algo
+ * que aún no existe. Como la ruta es determinista (`fecha/tipo.webp`) no
+ * hace falta esperar a que termine la subida para conocerla.
+ */
+export async function guardarReporteConsola(
+  fecha: string,
+  tipo: ConsolaTipo,
+  blob: Blob,
+  datos: DatosReporte
+): Promise<string> {
+  const clave = claveReporte(fecha, tipo)
+  const path = rutaImagen(fecha, tipo)
+  const ahora = ahoraISO()
+
+  // Si ya hay reporte ACTIVO de ese día y tipo se conserva su id: la
+  // identidad real es (fecha, tipo), igual que en el servidor. Los
+  // eliminados se ignoran a propósito: reutilizar el id de uno borrado
+  // chocaría con su propia fila al insertar.
+  const previo = await dbLocal.consola_reportes
+    .where('[fecha+tipo]')
+    .equals([fecha, tipo])
+    .filter(r => !r.deleted_at)
+    .first()
+  const id = previo?.id ?? crypto.randomUUID()
+
+  const fila: ConsolaReporteLocal = {
+    id,
+    fecha,
+    tipo,
+    imagen_path: path,
+    extraido: datos.extraido ?? null,
+    ventas_total: datos.ventas_total,
+    volumen_total_gl: datos.volumen_total_gl,
+    importe_total_centimos: datos.importe_total_centimos,
+    validacion_ok: datos.validacion_ok,
+    periodo_inicio: datos.periodo?.inicio ?? null,
+    periodo_fin: datos.periodo?.fin ?? null,
+    solicitud: datos.periodo?.solicitud ?? null,
+    fecha_detectada: datos.periodo?.fecha ?? null,
+    estado: 'pendiente',
+    fuente: datos.fuente,
+    // Una lectura nueva no hereda el "editado a mano" del reporte anterior:
+    // ese flag describe el valor actual, y este valor acaba de nacer del OCR.
+    editado_manual: false,
+    created_at: previo?.created_at ?? ahora,
+    updated_at: ahora,
+    deleted_at: null,
+  }
+
+  await dbLocal.transaction(
+    'rw',
+    dbLocal.consola_reportes,
+    dbLocal.imagenes,
+    dbLocal.outbox,
+    async () => {
+      await dbLocal.consola_reportes.put(fila)
+      await dbLocal.imagenes.put({
+        clave,
+        blob,
+        contentType: blob.type || 'image/webp',
+        creado_en: ahora,
+      })
+      await encolar({
+        tabla: 'consola_reportes',
+        op: 'upload',
+        pk: clave,
+        payload: { bucket: 'consola', path, clave },
+      })
+      await encolar({
+        tabla: 'consola_reportes',
+        op: 'rpc',
+        fn: 'fn_guardar_consola_reporte',
+        pk: clave,
+        payload: {
+          id,
+          fecha,
+          tipo,
+          imagen_path: path,
+          extraido: datos.extraido ?? null,
+          ventas_total: datos.ventas_total,
+          volumen_total_gl: datos.volumen_total_gl,
+          importe_total_centimos: datos.importe_total_centimos,
+          validacion_ok: datos.validacion_ok,
+          periodo_inicio: datos.periodo?.inicio ?? null,
+          periodo_fin: datos.periodo?.fin ?? null,
+          solicitud: datos.periodo?.solicitud ?? null,
+          fecha_detectada: datos.periodo?.fecha ?? null,
+          fuente: datos.fuente,
+          editado_manual: false,
+          productos: datos.productos ?? [],
+          stock: datos.stock ?? [],
+        },
+      })
+    }
+  )
+  void despuesDeEncolar()
+  return id
+}
+
+/**
+ * Elimina el reporte de un día/tipo. Soft delete en el servidor (el
+ * historial y la auditoría se conservan) y borrado real en local, junto
+ * con su imagen, que es lo que ocupa espacio.
+ *
+ * El índice único del servidor es parcial (`WHERE deleted_at IS NULL`),
+ * así que borrar deja libre la ranura para volver a cargar ese día.
+ */
+export async function eliminarReporteConsola(fecha: string, tipo: ConsolaTipo): Promise<void> {
+  const clave = claveReporte(fecha, tipo)
+  const fila = await dbLocal.consola_reportes
+    .where('[fecha+tipo]')
+    .equals([fecha, tipo])
+    .filter(r => !r.deleted_at)
+    .first()
+  if (!fila) return
+
+  await dbLocal.transaction(
+    'rw',
+    dbLocal.consola_reportes,
+    dbLocal.imagenes,
+    dbLocal.outbox,
+    async () => {
+      await dbLocal.consola_reportes.delete(fila.id)
+      await dbLocal.imagenes.delete(clave)
+      await encolar({
+        tabla: 'consola_reportes',
+        op: 'update',
+        pk: fila.id,
+        payload: { deleted_at: ahoraISO() },
+      })
+    }
+  )
+  void despuesDeEncolar()
+}
+
+/** Los reportes (0, 1 o 2) de un día, con su imagen local si la hay. */
+export async function leerReportesDia(
+  fecha: string
+): Promise<Record<ConsolaTipo, (ConsolaReporteLocal & { blob: Blob | null }) | null>> {
+  const filas = await dbLocal.consola_reportes.where('fecha').equals(fecha).toArray()
+  const out: Record<ConsolaTipo, (ConsolaReporteLocal & { blob: Blob | null }) | null> = {
+    ventas_dia: null,
+    stock_dia: null,
+  }
+  for (const f of filas) {
+    if (f.deleted_at) continue
+    const img = await dbLocal.imagenes.get(claveReporte(f.fecha, f.tipo))
+    out[f.tipo] = { ...f, blob: img?.blob ?? null }
+  }
+  return out
 }

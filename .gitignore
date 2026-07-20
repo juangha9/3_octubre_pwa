@@ -39,3 +39,7 @@ pnpm-debug.log*
 
 # TypeScript
 *.tsbuildinfo
+
+# Assets de Tesseract (~15 MB): los regenera `npm install`
+# mediante scripts/vendor-tesseract.mjs
+public/tesseract/

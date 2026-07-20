@@ -88,17 +88,71 @@ export interface PerfilLocal {
   activo: boolean
 }
 
+/** Cabecera de un reporte de consola (espejo de consola_reportes). */
+export interface ConsolaReporteLocal {
+  id: string
+  fecha: string
+  tipo: ConsolaTipo
+  imagen_path: string | null
+  /** Salida cruda del OCR: incluye las líneas por producto / por tanque. */
+  extraido: Record<string, unknown> | null
+  ventas_total: number | null
+  volumen_total_gl: number | null
+  importe_total_centimos: number | null
+  /** Σ(productos) = RSM. false ⇒ el OCR leyó mal; no autoconfirmar. */
+  validacion_ok: boolean | null
+  /** Periodo que declara el encabezado del reporte (migración 019). */
+  periodo_inicio: string | null
+  periodo_fin: string | null
+  solicitud: string | null
+  /**
+   * Día deducido del periodo. Si difiere de `fecha`, el reporte se archivó
+   * en un día distinto al que parece cubrir: o se pegó la imagen que no
+   * era, o el OCR leyó mal la fecha. Ambas cosas interesan al superadmin.
+   */
+  fecha_detectada: string | null
+  estado: 'pendiente' | 'confirmado'
+  fuente: 'ocr_local' | 'llm' | 'manual'
+  editado_manual: boolean
+  created_at: string
+  updated_at: string
+  deleted_at: string | null
+}
+
+export type ConsolaTipo = 'ventas_dia' | 'stock_dia'
+
+/**
+ * Imagen pegada, en binario. Vive en su propia tabla para que la cola no
+ * cargue blobs: el outbox solo guarda la `clave` con la que buscarla aquí.
+ * Se conserva tras subirla (copia local para auditoría sin red).
+ */
+export interface ImagenLocal {
+  /** `fecha|tipo`, la misma identidad natural del reporte. */
+  clave: string
+  blob: Blob
+  contentType: string
+  creado_en: string
+}
+
 // ── Cola de mutaciones pendientes de enviar a Supabase ───────────
 // Se procesa en orden estricto (FIFO): un update que sigue a un insert
 // de la misma fila debe llegar después. `pk` identifica la fila local;
 // para los upsert por clave natural es esa clave (p. ej. "fecha|turno").
 export interface OutboxEntry {
   id?: number
-  tabla: 'registro_ventas' | 'cierres_caja' | 'precios_diarios'
-  op: 'insert' | 'update' | 'upsert'
+  tabla: 'registro_ventas' | 'cierres_caja' | 'precios_diarios' | 'consola_reportes'
+  /**
+   * `upload` sube un binario a Storage (el blob se busca en `imagenes` por
+   * `payload.clave`); `rpc` invoca una función que escribe varias tablas de
+   * una sola vez. Ambas se encolan como cualquier otra mutación, así que
+   * una imagen pegada sin conexión sale sola al reconectar.
+   */
+  op: 'insert' | 'update' | 'upsert' | 'upload' | 'rpc'
   pk: string
   /** Columnas de conflicto del upsert (p. ej. 'fecha,turno_id'). */
   onConflict?: string
+  /** Nombre de la función para `op: 'rpc'`. */
+  fn?: string
   payload: Record<string, unknown>
   creado_en: string
   intentos: number
@@ -118,6 +172,8 @@ class GrifoLocalDB extends Dexie {
   empresas_clientes!: Table<EmpresaCliente, string>
   tipos_combustible!: Table<TipoCombustible, string>
   profiles!: Table<PerfilLocal, string>
+  consola_reportes!: Table<ConsolaReporteLocal, string>
+  imagenes!: Table<ImagenLocal, string>
   outbox!: Table<OutboxEntry, number>
   meta!: Table<MetaEntry, string>
 
@@ -136,6 +192,13 @@ class GrifoLocalDB extends Dexie {
       outbox: '++id, tabla',
       meta: 'clave',
     })
+    // v2 (migración 017): reportes de consola + blobs de las imágenes.
+    // Dexie conserva los stores no mencionados, así que no hay que
+    // repetir los de la v1 ni se pierde nada de lo ya guardado.
+    this.version(2).stores({
+      consola_reportes: 'id, [fecha+tipo], fecha, updated_at',
+      imagenes: 'clave',
+    })
   }
 }
 
@@ -143,3 +206,12 @@ export const dbLocal = new GrifoLocalDB()
 
 /** Clave natural de un cierre de caja (única por migración 016). */
 export const claveCierre = (fecha: string, turnoId: number) => `${fecha}|${turnoId}`
+
+/** Clave natural de un reporte de consola (única por migración 017). */
+export const claveReporte = (fecha: string, tipo: ConsolaTipo) => `${fecha}|${tipo}`
+
+/**
+ * Ruta determinista en el bucket. Al conocerse antes de subir, la fila
+ * puede guardar su `imagen_path` sin esperar a que termine la carga.
+ */
+export const rutaImagen = (fecha: string, tipo: ConsolaTipo) => `${fecha}/${tipo}.webp`

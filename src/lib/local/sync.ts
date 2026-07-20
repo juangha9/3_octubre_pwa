@@ -11,10 +11,12 @@ import { supabase } from '@/lib/supabase'
 import {
   dbLocal,
   claveCierre,
+  claveReporte,
   type OutboxEntry,
   type RegistroVentaLocal,
   type CierreCajaLocal,
   type PrecioDiarioLocal,
+  type ConsolaReporteLocal,
 } from './db'
 
 // ── Estado observable del sync (para el indicador de la UI) ──────
@@ -76,6 +78,29 @@ export async function despuesDeEncolar(): Promise<void> {
   void flush()
 }
 
+/**
+ * Sube a Storage el blob que la entrada referencia. El binario NO viaja en
+ * la cola: se guarda en `imagenes` y aquí se recupera por su clave. Si ya
+ * no está (se limpió la caché local), la entrada se descarta en vez de
+ * bloquear la cola para siempre: la fila del reporte, que es el dato que
+ * importa, ya se envió por su cuenta.
+ */
+async function subirImagen(entry: OutboxEntry): Promise<{ error: { message: string } | null }> {
+  const clave = String(entry.payload.clave)
+  const img = await dbLocal.imagenes.get(clave)
+  if (!img) {
+    console.warn('[sync] imagen ausente en local, se omite la subida:', clave)
+    return { error: null }
+  }
+  const { error } = await supabase.storage
+    .from(String(entry.payload.bucket))
+    .upload(String(entry.payload.path), img.blob, {
+      contentType: img.contentType,
+      upsert: true, // volver a pegar la imagen del día reemplaza la anterior
+    })
+  return { error: error ? { message: error.message } : null }
+}
+
 let flushing = false
 
 /**
@@ -101,9 +126,13 @@ export async function flush(): Promise<boolean> {
             ? await supabase.from(entry.tabla).insert(entry.payload)
             : entry.op === 'update'
               ? await supabase.from(entry.tabla).update(entry.payload).eq('id', entry.pk)
-              : await supabase
-                  .from(entry.tabla)
-                  .upsert(entry.payload, { onConflict: entry.onConflict })
+              : entry.op === 'upload'
+                ? await subirImagen(entry)
+                : entry.op === 'rpc'
+                  ? await supabase.rpc(entry.fn!, { p: entry.payload })
+                  : await supabase
+                      .from(entry.tabla)
+                      .upsert(entry.payload, { onConflict: entry.onConflict })
         if (error) throw new Error(error.message)
         await dbLocal.outbox.delete(entry.id!)
         await refrescarPendientes()
@@ -211,9 +240,34 @@ async function mergePrecios(rows: PrecioDiarioLocal[]) {
   })
 }
 
+/**
+ * Reportes de consola: clave natural (fecha+tipo), igual que los cierres.
+ * El id puede diferir del local si el reporte nació sin conexión y la RPC
+ * conservó el id que ya existía en el servidor.
+ */
+async function mergeReportes(rows: ConsolaReporteLocal[]) {
+  if (rows.length === 0) return
+  const pendientes = await pksPendientes('consola_reportes')
+  await dbLocal.transaction('rw', dbLocal.consola_reportes, async () => {
+    for (const r of rows) {
+      // Se comprueban las dos formas de pk que usa esta tabla: clave
+      // natural (alta por RPC y subida de imagen) e id (borrado). Si no,
+      // un borrado aún en cola se desharía al llegar el pull.
+      if (pendientes.has(claveReporte(r.fecha, r.tipo)) || pendientes.has(r.id)) continue
+      const local = await dbLocal.consola_reportes
+        .where('[fecha+tipo]')
+        .equals([r.fecha, r.tipo])
+        .first()
+      if (local && local.id === r.id && local.updated_at === r.updated_at) continue
+      if (local && local.id !== r.id) await dbLocal.consola_reportes.delete(local.id)
+      await dbLocal.consola_reportes.put(r)
+    }
+  })
+}
+
 /** Pull incremental de una tabla por updated_at (paginado). */
 async function pullIncremental<T extends { updated_at: string }>(
-  tabla: 'registro_ventas' | 'cierres_caja' | 'precios_diarios',
+  tabla: 'registro_ventas' | 'cierres_caja' | 'precios_diarios' | 'consola_reportes',
   merge: (rows: T[]) => Promise<void>
 ) {
   const metaKey = `lastPull.${tabla}`
@@ -300,6 +354,9 @@ export async function sincronizarAhora(): Promise<void> {
     await pullIncremental('registro_ventas', mergeRegistros)
     await pullIncremental('cierres_caja', mergeCierres)
     await pullIncremental('precios_diarios', mergePrecios)
+    // Sin entrada en `hidratado`: arranca desde 1970 y baja el historial
+    // completo. Son ~2 filas al día, así que no hace falta ventana.
+    await pullIncremental('consola_reportes', mergeReportes)
     if (colaVacia) setStatus({ ultimaSync: new Date().toISOString() })
   } catch (err) {
     if (!esErrorDeRed(err)) console.error('[sync] pull falló:', err)

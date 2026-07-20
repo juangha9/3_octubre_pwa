@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-16** (**LOCAL-FIRST fases 1-2 CONSTRUIDAS**: Ventas y Seguimiento leen/escriben en IndexedDB (Dexie) con outbox + sync worker + badge de estado; ⚠️ falta **aplicar la migración 016** para que el sync funcione — ver sección 2026-07-16)
+Última actualización: **2026-07-19** (**FASE 3 + OCR LOCAL CONSTRUIDOS Y CALIBRADOS** contra reportes reales: los 2 screenshots de consola del día se pegan con Ctrl+V en Ventas, Tesseract los lee en el navegador —2.4 s— y de ahí sale el TOTAL CONSOLA del día. Migraciones **017, 018 y 019 aplicadas y verificadas en vivo**. Ver sección 2026-07-19)
 
 ## Módulos completados
 
@@ -420,6 +420,57 @@ Objetivo: comparar unos días, **sin tocar producción**, el ranking de la fuent
 - Comportamiento offline esperado: escribir funciona siempre (cola ámbar con contador); al volver la conexión se vacía sola. Conflicto real (dos dispositivos editan lo mismo offline) → gana el último en llegar (LWW), rastro en `registro_ventas_log`.
 - Pendiente natural: fases 3-6 del plan (captura de consola + OCR); extender local-first a Compras/Varillaje si se quiere (el motor ya es genérico).
 
+## Cambios de esta sesión (2026-07-19) — FASE 3 + OCR LOCAL DE REPORTES DE CONSOLA
+
+Plan: `PLAN-cuadre-consola-y-localfirst.md` (§2-bis recoge las decisiones revisadas de esta sesión).
+
+### Decisiones que cambiaron el plan
+- **2 imágenes al día, no 6.** Se descartan los 4 reportes por turno: su suma ya equivale al consolidado, y ese descuadre le interesa al **grifero** (para que no le descuenten), no al administrador. Quedan 1 consolidado de ventas + 1 de stock. Consecuencia: no existe el tipo `ventas_turno` ni FK a turnos — estos reportes son del **día**.
+- **El total del día llena una fila Σ nueva** al pie de la tabla de turnos. Las 4 celdas TOTAL CONSOLA por turno **siguen siendo manuales**: el consolidado da un solo número y no hay forma de repartirlo.
+- **La fila Σ no es editable.** El usuario "edita" ese total indirectamente, tecleando los 4 turnos; el número del OCR es la vara contra la que se miden. Solo el OCR escribe ahí; para corregirlo se vuelve a pegar el reporte.
+- **Orden de motores invertido**: Tesseract (offline) primero, LLM después como red de seguridad. Si el local acierta de forma consistente, puede que la fase 4 no haga falta.
+- **Sin OpenCV.js.** El anclaje se hace con las cajas de palabra del propio Tesseract: rótulo de fila (`DB5`/`G.PRE`/`G.REG`/`RSM`/nº de tanque) + encabezado de columna. Misma inmunidad a escala y encuadre que el template matching, sin 9 MB extra de WASM.
+
+### Base de datos
+- **`017_consola_reportes.sql`** — `consola_reportes` (cabecera, con `UNIQUE(fecha,tipo)` parcial `WHERE deleted_at IS NULL`), `consola_reporte_productos`, `consola_reporte_stock`, `consola_reportes_log` (**auditoría completa vía trigger, mismo patrón que `registro_ventas_log`**), RLS admin+, bucket privado `consola` y RPC `fn_guardar_consola_reporte` (cabecera + líneas en una transacción, patrón `fn_guardar_compra`).
+- **`018_fix_guard_null_rol.sql`** — ⚠️ **bug de seguridad detectado al probar la 017 en vivo**: `IF get_my_role() NOT IN (...)` **falla ABIERTO** cuando el rol es NULL (sin sesión), porque `NULL NOT IN (...)` vale NULL y el `IF` no entra → el `RAISE EXCEPTION` nunca corría. No hubo exposición porque la función no es `SECURITY DEFINER` y el RLS frenó la escritura (42501), pero el guard estaba de adorno. Arreglado con `COALESCE(get_my_role(),'')`. **`fn_guardar_compra` (versión viva: migración 012) arrastra el mismo patrón — pendiente**, se dejó fuera a propósito para no reescribir a ciegas su lógica de flete por galón.
+- **`019_consola_periodo.sql`** — `periodo_inicio`/`periodo_fin`/`solicitud` + `fecha_detectada`. La discrepancia **no tiene columna propia**: es que `fecha_detectada <> fecha` (dato derivado, no puede desincronizarse). Índice parcial para consultarla.
+
+### Local-first: el outbox ahora mueve binarios y RPC
+- Dexie **v2** con `consola_reportes` + `imagenes` (los blobs viven aparte para que la cola no cargue binarios; la entrada solo guarda su clave).
+- `OutboxEntry` gana las ops **`upload`** (sube a Storage) y **`rpc`**. Ruta determinista `fecha/tipo.webp` → la fila puede guardar su `imagen_path` sin esperar a la subida. Pegar sin conexión funciona: todo sale solo al reconectar.
+- `mergeReportes` comprueba las **dos formas de pk** que usa esta tabla (clave natural para altas, id para borrados); si no, un borrado en cola se deshacía al llegar el pull.
+
+### OCR local — `src/lib/ocr/`
+- `imagen.ts`: escalado (objetivo 2600 px, tope 6×), grises, **binarización Otsu con auto-inversión**, `reducir()` para la pasada de localización, `aWebP()`.
+- `consola.ts`: worker principal (localizar) + **pool de 3 workers** (leer cifras), agrupación de palabras en filas por solapamiento vertical, clasificación del tipo de reporte, parseo y validación.
+- **Tesseract vendorizado** en `public/tesseract/` vía `scripts/vendor-tesseract.mjs` (postinstall; ~15 MB; **gitignored**). Sin esto lo pediría a un CDN y no funcionaría offline. **Hay que copiar las TRES variantes WASM** (`lstm`, `simd-lstm`, `relaxedsimd-lstm`): tesseract.js elige en runtime según el navegador. No se precachea en el SW (castigaría la carga de todos los usuarios); se cachea al primer uso con `CacheFirst`.
+
+### Lecciones de calibrar con reportes reales (NO volver a aprenderlas)
+1. **`npx tsc --noEmit` NO comprueba nada en este repo** (`tsconfig.json` con `files: []` + references) → usar **`npx tsc -b`** o `npm run build`.
+2. **Los separadores de miles/decimales son ilegibles para el OCR** (`8,183.170` → `8.183.170` → S/ 8.18). La solución no es adivinarlos sino **ignorarlos**: cada columna tiene formato fijo, así que se toman solo los dígitos y se divide (÷1000 en las de 3 decimales). Inmune a que la coma se lea como punto o se pierda.
+3. **El reporte de STOCK también contiene `DB5`/`G.REG`/`G.PRE`** (en su columna Producto) → clasificar por códigos de combustible da falso positivo. Se clasifica por **encabezados de columna** (`Ventas/Volumen/Importe` vs `Inicio/Final`), que no se solapan.
+4. **La consola dibuja un `▶`** en la fila seleccionada. Hay que **buscar** el rótulo entre las 3 primeras palabras, no tomar la primera no vacía: el marcador se lee como una letra suelta y descartaría esa fila **con su importe, en silencio**.
+5. **Resolución**: con 3× confundía dígitos (leyó `15,899.500` como `15,839.500`). A 6× + lectura celda a celda, resuelto.
+6. **Rendimiento**: de 4-5 s a **2.4 s**. Lo que lo movió fue el pool de workers (la pasada 2 era el 63% del tiempo); la pasada 1 sobre copia al 40% y `PSM.SINGLE_BLOCK` aportaron poco. Instrumentación permanente en consola: `[ocr] total … · preproceso … · localizar … · leer N celdas …` (**no se persiste**).
+
+### Validaciones (dos, de naturaleza distinta)
+- **Aritmética**: Σ productos = fila RSM. Responde *"¿leí bien los números?"*. Si falla, la lectura se marca **no validada** y el OCR **se abstiene de juzgar** al usuario (el aviso lo dice explícitamente en vez de acusar de descuadre). El panel **muestra el desglose** de lo que leyó: un auditor que acusa tiene que enseñar pruebas.
+- **De fecha**: el encabezado dice qué periodo cubre. Responde *"¿es este el reporte correcto?"*. Regla: **cierre menos 2 h** (cubre turnos que se pasan de medianoche; 7 casos probados). Si no coincide con el día abierto, el usuario elige entre ir al día del reporte o guardar en el abierto — la causa puede ser tanto imagen equivocada como OCR leyendo mal la fecha. Sale del texto que la pasada 1 ya reconoce: **cero llamadas extra**.
+
+### UI (`ConsolaUploader.tsx` + `VentasDelDiaPage.tsx`)
+- **Una sola zona de pegado** (Ctrl+V / arrastrar / clic) que reconoce sola si es ventas o stock. Miniatura 48×48 con **✕ roja al pasar el cursor** (borrado con confirmación) y **clic para ampliar**.
+- Disponible en **ambos modos**: tarjeta fija bajo Registro Rápido en ABREVIADO, y modal desde la celda Σ en los dos.
+- Todos los diálogos son **modales propios**, no `confirm()` del navegador.
+- ⚠️ **Tema oscuro**: se usaron `text-amber-900/700`, que **no tenían override oscuro** → avisos ilegibles. Se crearon **`.alert-warning` / `.alert-danger` / `.alert-success`** en `index.css` sobre los tokens `--c-warning/danger/success`, que se invierten solos con el tema. **Usar esas clases, no colores fijos de Tailwind.**
+
+### Pendientes de esta línea de trabajo
+- **UI para ver `consola_reportes_log`** (la tabla y el trigger existen desde la 017; falta la pantalla).
+- **Extender la validación Σ=RSM a Ventas y Volumen** — hoy solo cubre Importe, así que el ✓ verde promete menos de lo que aparenta.
+- **Fase 5**: comparar el stock de consola contra varillaje (los datos ya se guardan).
+- **Arreglar el guard NULL de `fn_guardar_compra`** (usar la 012 como base).
+- **Limitación conocida**: el OCR **no tolera imágenes giradas o inclinadas** — el diseño asume filas y columnas alineadas con los ejes.
+
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.
 - **Fix refresh al minimizar** — `onAuthStateChange` ignora `TOKEN_REFRESHED` y `SIGNED_IN` si ya hay perfil cargado (usa `profileRef`).
@@ -452,7 +503,10 @@ Objetivo: comparar unos días, **sin tocar producción**, el ranking de la fuent
 ## Gotchas conocidos (para futuras sesiones)
 - **Supabase 502 / CORS al cargar**: es infra, NO código. Probable proyecto pausado (plan free se pausa por inactividad) → reactivar en el dashboard de Supabase. El código ya no queda atascado si ocurre.
 - ~~`npm run build` falla en `vite.config.ts` (faltaba `@types/node`)~~ ✅ corregido 2026-07-06 (`@types/node` instalado + `fileURLToPath`); `npm run build` en verde.
-- **Lint**: el repo arrastra muchos `no-explicit-any` pre-existentes; `npm run lint` no está en verde. El build no usa eslint.
+- **Lint**: el repo arrastra muchos `no-explicit-any` pre-existentes; `npm run lint` no está en verde. El build no usa eslint. Para saber si un error es tuyo, lintea **solo tus archivos**.
+- ⚠️ **`npx tsc --noEmit` NO comprueba nada aquí** (2026-07-19): `tsconfig.json` tiene `files: []` y solo `references`, así que el comando termina en verde sin mirar una línea. Usar **`npx tsc -b`** (o `npm run build`, que hace `tsc -b && vite build`).
+- **Nunca reescribir una función SQL "de memoria"**: la versión viva puede ser de una migración posterior a la que se está mirando (le pasó a `fn_guardar_compra`: la 011 la crea, pero la **012** la redefine). Leer la última definición antes de tocarla.
+- **Tema oscuro**: la tabla de overrides de `index.css` es **parcial**. Usar un tono de Tailwind no cubierto (p. ej. `text-amber-900`) rompe en silencio. Preferir `.alert-*` y los tokens temáticos.
 
 ## Estructura de archivos clave
 ```

@@ -21,6 +21,20 @@ Automatizar la carga del **cuadre de caja** leyendo con IA/OCR los **screenshots
 
 ⚠️ **Recordatorio del usuario**: hoy son 2 screenshots/día; el objetivo son ~6, pero **a futuro este proceso de captura se simplificará** — recordárselo al retomar.
 
+## 2-bis. Decisiones revisadas (sesión 2026-07-19) — sustituyen a lo de arriba donde choquen
+
+| Tema | Decisión nueva | Por qué |
+|---|---|---|
+| **Nº de imágenes** | **2 por día**: 1 REPORTE PRODUCTO **consolidado del día** + 1 REPORTE STOCK. Se descartan los 4 reportes por turno | La suma de los 4 turnos ya equivale al consolidado. Ese descuadre le interesa al **grifero** (para que no le descuenten), no al administrador |
+| **Qué autocompleta** | El total del día llena una **fila TOTAL nueva** al pie de la tabla de cuadre. Las 4 celdas TOTAL CONSOLA por turno **siguen siendo manuales** | El consolidado da un solo número; no hay forma de repartirlo entre turnos |
+| **Aviso de descuadre** | Si Σ(4 turnos) ≠ total del reporte → aviso ámbar bajo la tabla (no bloquea) | — |
+| **Sobreescritura** | Una lectura nueva **pregunta antes de pisar** un total ya editado a mano; si nunca se editó, entra directo | El 99 % de las veces el valor del OCR se mantiene, pero una corrección deliberada no se pierde en silencio |
+| **Momento de carga** | En cualquier momento del día; el total se recalcula solo | — |
+| **Reporte de stock** | En esta fase **solo se archiva**. La comparación vs varillaje sigue en la fase 5 | — |
+| **Orden de motores** | **INVERTIDO**: Tesseract (offline) **primero**, LLM después como red de seguridad | Reportes de pantalla nítida, tipografía fija y solo números: caso ideal para OCR local. Además evita depender de internet desde el arranque |
+| **Anclaje sin YOLO** | Se ancla por **rótulo de fila** (`DB5`, `G.PRE`, `G.REG`, `RSM`, nº de tanque) usando las cajas de palabra del propio Tesseract, + 2ª pasada con whitelist numérica sobre cada fila. **Sin OpenCV.js** | Da la misma inmunidad a escala/marco que el template matching, sin arrastrar ~9 MB de WASM extra. La geometría es relativa al ancla |
+| **`turno_id`** | Se elimina del modelo: estos reportes son del **día**, no de un turno | Consecuencia de bajar a 2 imágenes |
+
 ## 3. Origen de datos: las ~6 imágenes/día
 
 El admin del grifo las sube **al día siguiente** para cuadrar lo de ayer:
@@ -123,6 +137,8 @@ consola_reporte_stock         -- líneas de STOCK
 | **4. Extracción online (LLM)** | Edge Function `consola-ocr` + autocompletado + validaciones + alerta de edición | Medio | El cuadre se autocompleta |
 | **5. Stock vs varillaje** | Comparación + aviso de descalibración | Bajo | Control de calibración |
 | **6. OCR offline (WASM)** | Template matching + Tesseract.js client-side | Medio-Alto | Lectura sin internet |
+
+**Orden — ACTUALIZADO (2026-07-19): fases 1-2 hechas. Luego 3 + 6 juntas (datos/captura + OCR local), después 5 (stock vs varillaje) y por último 4 (LLM como red de seguridad).** La 4 baja de prioridad: si Tesseract acierta de forma consistente sobre estos reportes, puede que no haga falta.
 
 **Orden — DECIDIDO (2026-07-15): se empieza por local-first (fases 1 → 2), luego el OCR (3 → 4 → 5), y el OCR offline (6) al final.** (La alternativa de hacer el OCR primero sobre la arquitectura actual se descartó: el usuario prioriza que Ventas/Seguimiento sean local-first e impecables desde ya, porque de ahí salen los descuentos al personal y el cobro de créditos.)
 

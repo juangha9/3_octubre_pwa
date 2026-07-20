@@ -289,6 +289,18 @@
   .badge-warning { @apply badge bg-warning text-warning-text; }
   .badge-primary { @apply badge bg-primary text-primary-text; }
   .badge-accent  { @apply badge bg-accent text-accent-text; }
+
+  /* ── Alertas ──
+     USAR ESTAS, no `bg-amber-50 text-amber-900` y compañía: los tokens
+     --c-warning/--c-danger/--c-success ya se invierten con el tema, así
+     que el contraste queda garantizado en claro Y en oscuro sin depender
+     de que alguien recuerde añadir el override de la sección de abajo.
+     (Un aviso en ámbar oscuro sobre fondo oscuro era ilegible; de ahí
+     que esto exista.) */
+  .alert         { @apply rounded border px-3 py-2 text-xs leading-tight; }
+  .alert-warning { @apply alert bg-warning  border-warning-dark text-warning-text; }
+  .alert-danger  { @apply alert bg-danger   border-danger-dark  text-danger-text; }
+  .alert-success { @apply alert bg-success  border-success-dark text-success-text; }
 }
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -327,7 +339,9 @@
 :root[data-theme='dark'] .text-slate-500 { color: #b0bccd; }
 :root[data-theme='dark'] .text-slate-400 { color: #94a3b8; }
 :root[data-theme='dark'] .text-slate-300 { color: #7c899c; }
+:root[data-theme='dark'] .text-amber-900,
 :root[data-theme='dark'] .text-amber-800 { color: #fcd34d; }
+:root[data-theme='dark'] .text-amber-700,
 :root[data-theme='dark'] .text-amber-600 { color: #fbbf24; }
 :root[data-theme='dark'] .text-green-950,
 :root[data-theme='dark'] .text-green-800,
@@ -339,4 +353,5 @@
 /* Bordes */
 :root[data-theme='dark'] .border-slate-200,
 :root[data-theme='dark'] .border-slate-300 { border-color: #334155; }
+:root[data-theme='dark'] .border-amber-400,
 :root[data-theme='dark'] .border-amber-300 { border-color: #92400e; }

@@ -16,8 +16,10 @@ import {
   softDeleteRegistroVenta,
   upsertCierreCaja,
   upsertPrecioDiario,
+  leerReportesDia,
 } from '@/lib/local/repo'
 import { asegurarRango, sincronizarAhora } from '@/lib/local/sync'
+import ConsolaUploader, { ConsolaPanel } from './ConsolaUploader'
 import Combobox from '@/components/Combobox'
 import CeldaGrid from '@/components/CeldaGrid'
 import { useGridHoja, type GridHoja } from '@/lib/useGridHoja'
@@ -1047,6 +1049,49 @@ export default function VentasPage() {
     return map
   }, [registros, turnos])
 
+  // ── Total de consola del día (del reporte que lee el OCR) ─────
+  // Vive en consola_reportes, no en cierres_caja: es un dato del DÍA, no
+  // de un turno. La fila TOTAL lo muestra en solo lectura: el usuario edita
+  // los 4 turnos, y este número es la referencia contra la que se contrastan.
+  // Solo el OCR escribe aquí; para corregirlo se vuelve a pegar el reporte.
+  const reportesConsola = useLiveQuery(() => leerReportesDia(fecha), [fecha])
+  const totalConsolaDia = reportesConsola?.ventas_dia?.importe_total_centimos ?? null
+  // El OCR pesa como auditor: si su propia lectura no se validó (Σ de las
+  // líneas ≠ fila RSM del reporte), NO puede acusar de descuadre al usuario.
+  // Se marca como dudosa para que nadie la trate como verdad.
+  const lecturaDudosa = reportesConsola?.ventas_dia?.validacion_ok === false
+  const [modalConsola, setModalConsola] = useState(false)
+
+  // ── Totales del día (fila TOTAL al pie de la tabla de turnos) ──
+  // El TOTAL CONSOLA de esta fila NO es esta suma: viene del reporte
+  // consolidado que lee el OCR. La suma se usa solo para contrastarla.
+  const totalesTurnos = useMemo(() => {
+    const acc = {
+      total_consola: 0, yape: 0, openpay: 0, deposito: 0, vales: 0,
+      corporacion: 0, licitaciones: 0, particulares: 0, chevron: 0,
+      creditos: 0, serafinado: 0, redondeo: 0, efectivo: 0,
+    }
+    for (const t of turnos) {
+      const c = cierresMap[t.id]
+      const cr = creditosPorTurno[t.id] ?? { corporacion: 0, licitaciones: 0, particulares: 0, chevron: 0 }
+      acc.corporacion += cr.corporacion
+      acc.licitaciones += cr.licitaciones
+      acc.particulares += cr.particulares
+      acc.chevron += cr.chevron
+      acc.creditos += cr.corporacion + cr.licitaciones + cr.particulares + cr.chevron
+      if (!c) continue
+      acc.total_consola += c.total_consola_centimos ?? 0
+      acc.yape += c.yape_centimos
+      acc.openpay += c.openpay_centimos
+      acc.deposito += c.deposito_transferencia_centimos
+      acc.vales += c.dscto_vales_centimos
+      acc.serafinado += c.serafinado_centimos
+      acc.redondeo += c.redondeo_centimos
+      acc.efectivo += calcEfectivoFinal(c, cr)
+    }
+    return acc
+  }, [turnos, cierresMap, creditosPorTurno])
+
   // ── Redondeo sugerido por turno ───────────────────────────────
   // `total_consola` trae los importes reales de la consola (precio unitario con
   // más de 2 decimales), pero a los créditos les descontamos galones × precio de
@@ -1718,15 +1763,118 @@ export default function VentasPage() {
                           )
                         })}
                       </tbody>
+
+                      {/* Fila TOTAL: el TOTAL CONSOLA no es la suma de los
+                          turnos, sino lo que marcó el reporte consolidado
+                          del día. Si ambos difieren, se avisa debajo. */}
+                      <tfoot>
+                        <tr className="border-t-2 border-app-border bg-app-border/20 font-semibold">
+                          <td className="text-center text-base font-bold text-slate-800 bg-slate-50">
+                            Σ
+                          </td>
+                          {/* Único hueco de la fila TOTAL donde entra un dato
+                              externo: lo escribe el OCR al pegar el reporte, no
+                              el usuario. Clic → modal de carga. */}
+                          <td
+                            className="cursor-pointer p-0 hover:brightness-95"
+                            style={{ background: 'var(--c-hl-neutral)' }}
+                            title={
+                              totalConsolaDia === null
+                                ? 'Clic para pegar el reporte de consola del día (Ctrl+V)'
+                                : lecturaDudosa
+                                  ? 'Lectura NO validada: las cifras del propio reporte no cuadran ' +
+                                    'entre sí. Vuelve a pegarlo con mejor recorte antes de fiarte.'
+                                  : 'Total del reporte consolidado de la consola. Clic para volver a cargarlo.'
+                            }
+                            onClick={() => setModalConsola(true)}
+                          >
+                            <div className="px-1 text-right font-mono text-xs font-bold">
+                              {totalConsolaDia === null ? (
+                                <span className="text-app-muted">＋</span>
+                              ) : lecturaDudosa ? (
+                                <span className="text-amber-600">{fs(totalConsolaDia)} ⚠</span>
+                              ) : (
+                                fs(totalConsolaDia)
+                              )}
+                            </div>
+                          </td>
+                          <td className="text-right font-mono text-xs">{fs(totalesTurnos.yape)}</td>
+                          <td className="text-right font-mono text-xs">{fs(totalesTurnos.openpay)}</td>
+                          <td className="text-right font-mono text-xs">{fs(totalesTurnos.deposito)}</td>
+                          <td className="text-right font-mono text-xs">{fs(totalesTurnos.vales)}</td>
+                          {modo === 'abreviado' ? (
+                            <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-credit)' }}>
+                              {fs(totalesTurnos.creditos)}
+                            </td>
+                          ) : (
+                            <>
+                              <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(totalesTurnos.corporacion)}</td>
+                              <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(totalesTurnos.licitaciones)}</td>
+                              <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(totalesTurnos.particulares)}</td>
+                              <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-neutral)' }}>{fs(totalesTurnos.chevron)}</td>
+                            </>
+                          )}
+                          <td className="text-right font-mono text-xs">{fs(totalesTurnos.serafinado)}</td>
+                          <td className="text-right font-mono text-xs">{fs(totalesTurnos.redondeo)}</td>
+                          <td className="text-right font-mono text-xs" style={{ background: 'var(--c-hl-cash-soft)' }}>
+                            {fs(totalesTurnos.efectivo)}
+                          </td>
+                          <td />
+                        </tr>
+                      </tfoot>
                     </table>
                   </div>
+
+                  {/* Dos diagnósticos muy distintos, y conviene no confundirlos:
+                      o el OCR leyó mal (y entonces no puede juzgar a nadie), o
+                      leyó bien y el descuadre es real en lo que se digitó. */}
+                  {lecturaDudosa ? (
+                    <div className="alert-warning mt-2">
+                      La lectura del reporte de consola <strong>no está validada</strong>: las
+                      cifras por producto no suman el total del propio reporte, así que el OCR
+                      leyó mal algún dígito. No se puede contrastar contra los turnos hasta
+                      volver a cargarlo.
+                    </div>
+                  ) : totalConsolaDia !== null && totalesTurnos.total_consola > 0 &&
+                      totalConsolaDia !== totalesTurnos.total_consola ? (
+                    <div className="alert-warning mt-2">
+                      La suma de los turnos ({fs(totalesTurnos.total_consola)}) no coincide con
+                      el total del reporte de consola ({fs(totalConsolaDia)}). Diferencia:{' '}
+                      <strong>{fs(totalesTurnos.total_consola - totalConsolaDia)}</strong>. Revisa
+                      lo digitado en los 4 turnos.
+                    </div>
+                  ) : null}
                 </div>
+
+                {/* Carga de reportes de consola desde la celda Σ. Es la vía
+                    disponible en AMBOS modos; en ABREVIADO existe además la
+                    tarjeta fija junto a Registro Rápido. */}
+                {modalConsola && (
+                  <div className="modal-overlay" onClick={() => setModalConsola(false)}>
+                    <div
+                      className="modal-box !max-w-sm p-4"
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <div className="mb-3 flex items-center justify-between border-b border-app-border pb-1.5">
+                        <h3 className="text-sm font-bold text-app-text">Reportes de Consola</h3>
+                        <button
+                          className="text-app-muted hover:text-app-text"
+                          onClick={() => setModalConsola(false)}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <ConsolaPanel fecha={fecha} onIrAFecha={setFecha} />
+                    </div>
+                  </div>
+                )}
 
                 {/* === MODO ABREVIADO: Registro Rápido de Créditos === */}
                 {modo === 'abreviado' && (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {/* Formulario rápido */}
-                    <div className="card space-y-4 md:col-span-1">
+                    {/* Formulario rápido + carga de reportes de consola */}
+                    <div className="md:col-span-1 space-y-6">
+                    <div className="card space-y-4">
                       <h3 className="text-sm font-bold text-slate-700 border-b pb-1.5">Registro Rápido de Créditos</h3>
                       
                       <div className="flex items-center gap-4">
@@ -1766,6 +1914,9 @@ export default function VentasPage() {
                       >
                         {savingQuick ? 'Registrando…' : 'REGISTRAR'}
                       </button>
+                    </div>
+
+                    <ConsolaUploader fecha={fecha} onIrAFecha={setFecha} />
                     </div>
 
                     {/* Créditos rápidos del día, agrupados por turno */}
