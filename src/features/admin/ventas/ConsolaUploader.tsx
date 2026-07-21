@@ -19,6 +19,7 @@ import {
   guardarReporteConsola,
   leerReportesDia,
   eliminarReporteConsola,
+  asegurarImagenLocal,
 } from '@/lib/local/repo'
 import {
   leerReporte,
@@ -99,6 +100,17 @@ export function ConsolaPanel({ fecha, onIrAFecha }: Props) {
   const [porEliminar, setPorEliminar] = useState<ConsolaTipo | null>(null)
 
   const reportes = useLiveQuery(() => leerReportesDia(fecha), [fecha])
+
+  // Imágenes pegadas en OTRA máquina: la fila se sincroniza pero el blob vive
+  // en el Dexie de aquella. Si falta la miniatura y hay ruta en Storage, se
+  // baja y se cachea (el useLiveQuery de arriba la mostrará al cachearse).
+  useEffect(() => {
+    if (!reportes) return
+    for (const tipo of ['ventas_dia', 'stock_dia'] as ConsolaTipo[]) {
+      const r = reportes[tipo]
+      if (r && !r.blob && r.imagen_path) void asegurarImagenLocal(fecha, tipo, r.imagen_path)
+    }
+  }, [reportes, fecha])
 
   // Cargar el core WASM y el modelo tarda; hacerlo al abrir la pantalla
   // evita que ese coste caiga sobre el primer Ctrl+V. Al salir se suelta,

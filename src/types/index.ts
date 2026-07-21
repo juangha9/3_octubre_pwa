@@ -234,6 +234,9 @@ export interface OsinergminSnapshot {
   precio_regular_centimos: number | null
   ranking_premium: number | null
   precio_premium_centimos: number | null
+  // De qué fuente salió (migración 020). 'facilito' = en vivo; 'excel' =
+  // respaldo. Null en snapshots anteriores a la 020 → fuente desconocida.
+  fuente: 'facilito' | 'excel' | null
   created_at: string
 }
 

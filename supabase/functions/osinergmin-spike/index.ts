@@ -1,30 +1,26 @@
 // ============================================================
-// Edge Function: osinergmin-spike  (VALIDACIÓN — TEMPORAL)
+// Edge Function: osinergmin-spike  (DIAGNÓSTICO — solo superadmin)
 // ============================================================
 // Compara, LADO A LADO, el ranking calculado desde la fuente EN VIVO de
-// Facilito (web de OSINERGMIN) contra el último snapshot del Excel EVPC que ya
-// mantiene `osinergmin-cron`. NO escribe nada: solo lee y devuelve el diff en
-// JSON para que el superadmin decida si la fuente Facilito es fiable y más
-// fresca antes de cambiar el cron de producción.
+// Facilito AHORA contra el último snapshot publicado (que desde la migración 20
+// suele ser también Facilito, pero puede ser el Excel de respaldo). NO escribe
+// nada: solo lee y devuelve el diff en JSON. Herramienta de control para que el
+// superadmin verifique que el snapshot publicado sigue cuadrando con lo que hay
+// en vivo, y detecte a ojo si la fuente en vivo se desvió o quedó vieja.
 //
-// Por qué existe (sesión 2026-07-14):
-//  · El Excel EVPC es un volcado ~diario: un cambio declarado a media mañana no
-//    aparece hasta el volcado de la madrugada siguiente (latencia de ~18 h).
+// Contexto (sesión 2026-07-14):
 //  · La web de Facilito consulta la base VIVA. Su buscador POST lleva reCAPTCHA
 //    v3, pero el MISMO action por GET devuelve los datos SIN token. Es un GET a
 //    datos públicos: no se bypassea ninguna barrera.
-//
-// Cómo identifica los datos:
-//  · Zona (Miraflores/Arequipa) y nuestro establecimiento van HARDCODEADOS como
-//    constantes del spike (ver ZONA / NUESTRO_CODIGO). Producción tendría que
-//    mapear RUC→códigos o guardarlos en app_config. `NUESTRO_CODIGO='21728'`
-//    (GRIFO ALEXMATH) se verificó por precios contra el snapshot del 14/07.
 //  · La página ya viene ORDENADA por precio ascendente = el orden canónico de
 //    OSINERGMIN (incluye su desempate). Se respeta ese orden: nuestro puesto =
 //    la posición de nuestro código. Facilito no trae RUC ni fecha de registro.
 //
+// Config: la zona (códigos INEI) y nuestro CODIGO_OSINERG se leen de app_config
+// —las MISMAS claves que usa osinergmin-cron— para que el diagnóstico compare
+// con exactamente los parámetros de producción y no diverja.
+//
 // Slug en Supabase: osinergmin-spike  ·  Verify JWT: DESACTIVADO.
-// Borrar (función + este archivo + panel del front) cuando termine la validación.
 // ============================================================
 import { serve } from 'https://deno.land/std@0.208.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -42,10 +38,11 @@ const CORS = {
 const jsonHeaders = { ...CORS, 'Content-Type': 'application/json' }
 const toCentimos = (p: number) => (isNaN(p) ? 0 : Math.round(p * 100))
 
-// ── Zona y establecimiento del spike (NUESTRO grifo) ──
-// Códigos numéricos de Facilito (INEI×10000). Arequipa/Arequipa/Miraflores.
-const ZONA = { departamento: '40000', provincia: '40100', distrito: '40110' }
-const NUESTRO_CODIGO = '21728' // GRIFO ALEXMATH (verificado por precios vs snapshot 14/07)
+// La zona (códigos INEI×10000) y nuestro CODIGO_OSINERG se leen de app_config
+// en run(); estos son solo los defaults por si la clave estuviera vacía.
+type Zona = { departamento: string; provincia: string; distrito: string }
+const ZONA_DEFAULT: Zona = { departamento: '40000', provincia: '40100', distrito: '40110' }
+const CODIGO_DEFAULT = '21728' // GRIFO ALEXMATH (verificado por precios vs snapshot 14/07)
 const PRODUCTOS = [
   { codigo: 'DB5', facilito: '40' },
   { codigo: 'REGULAR', facilito: '126' },
@@ -72,11 +69,11 @@ type FilaLive = { codigo: string; razon: string; direccion: string; precio: numb
 
 // Descarga el buscador de un producto y devuelve sus filas EN EL ORDEN de la
 // página (ascendente por precio = orden canónico de OSINERGMIN).
-async function traerFacilito(facilitoProd: string): Promise<FilaLive[]> {
+async function traerFacilito(zona: Zona, facilitoProd: string): Promise<FilaLive[]> {
   const url =
     `https://www.facilito.gob.pe/facilito/actions/PreciosCombustibleAutomotorAction.do` +
-    `?method=cambiarProducto&departamento=${ZONA.departamento}&departamentoAux=${ZONA.departamento}` +
-    `&provincia=${ZONA.provincia}&distrito=${ZONA.distrito}&producto=${facilitoProd}`
+    `?method=cambiarProducto&departamento=${zona.departamento}&departamentoAux=${zona.departamento}` +
+    `&provincia=${zona.provincia}&distrito=${zona.distrito}&producto=${facilitoProd}`
   const resp = await fetch(url, {
     headers: {
       'User-Agent':
@@ -115,19 +112,19 @@ type LadoExcel = {
   total: number | null; top: TopRow[]
 }
 
-function rankFacilito(filas: FilaLive[]): LadoFacilito {
+function rankFacilito(filas: FilaLive[], nuestroCodigo: string): LadoFacilito {
   // ¿La página realmente viene ascendente? (sanity check del supuesto clave.)
   let ordenado = true
   for (let i = 1; i < filas.length; i++) if (filas[i].precio < filas[i - 1].precio) ordenado = false
 
-  const idxNuestro = filas.findIndex((f) => f.codigo === NUESTRO_CODIGO)
+  const idxNuestro = filas.findIndex((f) => f.codigo === nuestroCodigo)
   const hasta = idxNuestro >= 10 ? idxNuestro + 1 : 10
   const top: TopRow[] = filas.slice(0, hasta).map((f, i) => ({
     ranking: i + 1,
     codigo: f.codigo,
     razon: f.razon,
     precio_centimos: toCentimos(f.precio),
-    es_nuestro: f.codigo === NUESTRO_CODIGO,
+    es_nuestro: f.codigo === nuestroCodigo,
   }))
   return {
     our_ranking: idxNuestro >= 0 ? idxNuestro + 1 : null,
@@ -141,11 +138,27 @@ function rankFacilito(filas: FilaLive[]): LadoFacilito {
 async function run(): Promise<{ status: number; body: unknown }> {
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE)
 
+  // Zona y código desde app_config (mismas claves que osinergmin-cron).
+  const { data: cfgRows } = await admin
+    .from('app_config')
+    .select('clave, valor')
+    .in('clave', [
+      'osinergmin_facilito_departamento', 'osinergmin_facilito_provincia',
+      'osinergmin_facilito_distrito', 'osinergmin_codigo_establecimiento',
+    ])
+  const cfg = Object.fromEntries((cfgRows ?? []).map((r) => [r.clave, (r.valor ?? '').trim()]))
+  const zona: Zona = {
+    departamento: cfg['osinergmin_facilito_departamento'] || ZONA_DEFAULT.departamento,
+    provincia: cfg['osinergmin_facilito_provincia'] || ZONA_DEFAULT.provincia,
+    distrito: cfg['osinergmin_facilito_distrito'] || ZONA_DEFAULT.distrito,
+  }
+  const nuestroCodigo = cfg['osinergmin_codigo_establecimiento'] || CODIGO_DEFAULT
+
   // ── Lado FACILITO (en vivo) ──
   const facilito: Record<string, LadoFacilito> = {}
   for (const p of PRODUCTOS) {
-    const filas = await traerFacilito(p.facilito)
-    facilito[p.codigo] = rankFacilito(filas)
+    const filas = await traerFacilito(zona, p.facilito)
+    facilito[p.codigo] = rankFacilito(filas, nuestroCodigo)
   }
 
   // ── Lado EXCEL (último snapshot que ya mantiene osinergmin-cron) ──
@@ -209,19 +222,20 @@ async function run(): Promise<{ status: number; body: unknown }> {
   }
 
   const snapFecha = snap ? ((snap as Record<string, string>).fecha_consulta ?? null) : null
+  const snapFuente = snap ? ((snap as Record<string, string>).fuente ?? '—') : null
   if (snapFecha) {
     const horas = Math.round((Date.now() - new Date(snapFecha).getTime()) / 3600000)
-    notasGlobal.unshift(`Snapshot del Excel: hace ~${horas} h (${snapFecha}).`)
+    notasGlobal.unshift(`Último snapshot publicado (fuente: ${snapFuente}): hace ~${horas} h (${snapFecha}).`)
   } else {
-    notasGlobal.unshift('No hay snapshot del Excel todavía; solo se muestra el lado Facilito.')
+    notasGlobal.unshift('No hay snapshot publicado todavía; solo se muestra el lado Facilito.')
   }
 
   return {
     status: 200,
     body: {
       ok: true,
-      zona: ZONA,
-      nuestro_codigo: NUESTRO_CODIGO,
+      zona,
+      nuestro_codigo: nuestroCodigo,
       fetched_at: new Date().toISOString(),
       excel_snapshot_fecha: snapFecha,
       productos,

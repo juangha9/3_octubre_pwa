@@ -1,11 +1,11 @@
 // ============================================================
-// SpikeFacilitoPanel — VALIDACIÓN TEMPORAL (solo superadmin)
+// SpikeFacilitoPanel — DIAGNÓSTICO (solo superadmin)
 // ============================================================
 // Invoca la Edge Function `osinergmin-spike` y muestra, LADO A LADO, el ranking
-// de la fuente EN VIVO de Facilito vs el último snapshot del Excel EVPC. Sirve
-// para decidir, durante unos días, si cambiamos la fuente de `osinergmin-cron`.
-// Es un panel desechable: borrar (junto a la función y su config) cuando termine
-// la validación. Ver estado.md, sesión 2026-07-14/15.
+// de la fuente EN VIVO de Facilito AHORA vs el último snapshot publicado (que
+// desde la migración 020 suele ser Facilito, pero puede ser el Excel de
+// respaldo). Herramienta de control permanente: sirve para verificar a ojo que
+// el snapshot publicado sigue cuadrando con lo que hay en vivo. No cambia nada.
 // ============================================================
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -114,10 +114,11 @@ export default function SpikeFacilitoPanel() {
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-app-text">
-            🧪 Validación: Facilito (en vivo) vs Excel <span className="font-normal text-app-muted">— spike temporal</span>
+            🔎 Diagnóstico: Facilito (en vivo) vs snapshot publicado
           </h3>
           <p className="text-xs text-app-muted">
-            Compara el ranking de la fuente en vivo contra el último snapshot del Excel. No cambia nada; solo lo muestra.
+            Compara la fuente en vivo AHORA contra el último snapshot publicado, para verificar que
+            siguen cuadrando. No cambia nada; solo lo muestra.
           </p>
         </div>
         <button className="btn-primary text-xs" onClick={comparar} disabled={cargando}>
@@ -139,7 +140,7 @@ export default function SpikeFacilitoPanel() {
               : 'border-app-border bg-white text-app-text'
           }`}>
             <span className="font-semibold">
-              {data.resumen.todo_coincide ? '✓ Facilito y Excel coinciden en los 3 productos.' : '≠ Hay diferencias (esperable si el Excel está desfasado):'}
+              {data.resumen.todo_coincide ? '✓ La fuente en vivo y el snapshot publicado coinciden en los 3 productos.' : '≠ Hay diferencias (esperable si el snapshot publicado ya quedó viejo):'}
             </span>
             <ul className="mt-1 list-inside list-disc text-app-muted">
               {data.resumen.notas.map((n, i) => <li key={i}>{n}</li>)}
@@ -166,7 +167,7 @@ export default function SpikeFacilitoPanel() {
                   </div>
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <LadoTabla titulo="Facilito (en vivo)" rank={c.facilito.our_ranking} precio={c.facilito.our_precio_centimos} total={c.facilito.total} top={c.facilito.top} />
-                    <LadoTabla titulo="Excel (último snapshot)" rank={c.excel.our_ranking} precio={c.excel.our_precio_centimos} total={c.excel.total} top={c.excel.top} />
+                    <LadoTabla titulo="Snapshot publicado" rank={c.excel.our_ranking} precio={c.excel.our_precio_centimos} total={c.excel.total} top={c.excel.top} />
                   </div>
                 </div>
               )

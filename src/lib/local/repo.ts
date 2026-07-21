@@ -21,6 +21,7 @@ import {
   type OutboxEntry,
 } from './db'
 import { despuesDeEncolar } from './sync'
+import { supabase } from '@/lib/supabase'
 import type { Turno, EmpresaCliente, TipoCombustible } from '@/types'
 
 const ahoraISO = () => new Date().toISOString()
@@ -473,6 +474,37 @@ export async function eliminarReporteConsola(fecha: string, tipo: ConsolaTipo): 
     }
   )
   void despuesDeEncolar()
+}
+
+/**
+ * Garantiza que la imagen de un reporte esté en la caché local (Dexie).
+ *
+ * La miniatura vive en `imagenes`, que es LOCAL a cada navegador. Si el
+ * reporte se pegó en OTRA máquina, aquí llega la fila (sincronizada, por eso
+ * se ve la suma) pero no el blob. Cuando falta, se baja de Storage y se
+ * cachea; a partir de ahí ya está —incluso offline—. No hace nada si ya
+ * está, si no hay ruta, o si no hay conexión.
+ *
+ * Al hacer el `put`, el `useLiveQuery(leerReportesDia)` de la UI re-emite
+ * (lee la tabla `imagenes`) y la miniatura aparece sola.
+ */
+export async function asegurarImagenLocal(
+  fecha: string,
+  tipo: ConsolaTipo,
+  imagenPath: string | null
+): Promise<void> {
+  if (!imagenPath) return
+  const clave = claveReporte(fecha, tipo)
+  if (await dbLocal.imagenes.get(clave)) return
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return
+  const { data, error } = await supabase.storage.from('consola').download(imagenPath)
+  if (error || !data) return
+  await dbLocal.imagenes.put({
+    clave,
+    blob: data,
+    contentType: data.type || 'image/webp',
+    creado_en: ahoraISO(),
+  })
 }
 
 /** Los reportes (0, 1 o 2) de un día, con su imagen local si la hay. */

@@ -62,10 +62,44 @@ async function refrescarPendientes() {
 
 // ── Outbox: encolar y vaciar ─────────────────────────────────────
 
-/** Detecta fallos de red (reintentable) vs. rechazo real del servidor. */
-function esErrorDeRed(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return /fetch|network|failed to|load failed|abort/i.test(msg)
+/** Error de Supabase con su metadato: SQLSTATE de Postgres y/o HTTP status. */
+interface ErrorSupabase extends Error {
+  code?: string
+  status?: number
+}
+
+/**
+ * Convierte el `error` que devuelve supabase-js en un Error que CONSERVA su
+ * código. Sin esto (`new Error(error.message)`) se pierde justo el dato que
+ * distingue un rechazo definitivo de un tropiezo temporal.
+ */
+function comoError(error: { message: string; code?: string; status?: number; statusCode?: number }): ErrorSupabase {
+  const e: ErrorSupabase = new Error(error.message)
+  e.code = error.code
+  e.status = error.status ?? error.statusCode
+  return e
+}
+
+/**
+ * ¿El fallo al enviar es un rechazo DEFINITIVO del servidor, o un tropiezo
+ * temporal que se arregla reintentando?
+ *
+ * Reintentar NO lo arregla: violación de constraint, RLS, dato mal formado,
+ * un `RAISE` nuestro ("No autorizado"). El servidor entendió y dijo que no.
+ * Lo delata el SQLSTATE de Postgres (22xxx dato · 23xxx integridad · 28/42
+ * acceso · P0001 raise) o un HTTP 4xx. Solo esto enciende el punto ROJO.
+ *
+ * Reintentar SÍ ayuda (o es cuestión de esperar): sin internet, Supabase
+ * caído (5xx), timeout, cualquier fallo de red. Ante la duda se reintenta:
+ * es lo seguro, porque el dato sigue a salvo en la cola y no se pierde.
+ * (Antes se clasificaba por el texto del mensaje y un 5xx podía colarse
+ * como rechazo → punto rojo injustificado durante una caída de Supabase.)
+ */
+function esRechazoDefinitivo(err: unknown): boolean {
+  const e = err as ErrorSupabase
+  if (typeof e?.status === 'number') return e.status >= 400 && e.status < 500
+  if (typeof e?.code === 'string') return /^(22|23|28|42|P0)/.test(e.code)
+  return false
 }
 
 /**
@@ -133,7 +167,7 @@ export async function flush(): Promise<boolean> {
                   : await supabase
                       .from(entry.tabla)
                       .upsert(entry.payload, { onConflict: entry.onConflict })
-        if (error) throw new Error(error.message)
+        if (error) throw comoError(error)
         await dbLocal.outbox.delete(entry.id!)
         await refrescarPendientes()
       } catch (err) {
@@ -142,13 +176,15 @@ export async function flush(): Promise<boolean> {
           intentos: entry.intentos + 1,
           ultimo_error: msg,
         })
-        if (esErrorDeRed(err)) {
-          // Sin conexión (o Supabase caído): reintentar más tarde, sin alarmar.
-          setStatus({ error: null })
-        } else {
-          // Rechazo real (RLS, constraint, dato inválido): visible en la UI.
+        if (esRechazoDefinitivo(err)) {
+          // El servidor entendió y rechazó (RLS, constraint, dato inválido):
+          // reintentar no lo arregla → visible en la UI para que alguien lo vea.
           console.error('[sync] entrada rechazada por el servidor:', entry, msg)
           setStatus({ error: msg })
+        } else {
+          // Sin conexión, Supabase caído (5xx) o timeout: se reintenta más
+          // tarde sin alarmar. La cola sigue en ámbar, no en rojo.
+          setStatus({ error: null })
         }
         return false
       }
@@ -359,7 +395,7 @@ export async function sincronizarAhora(): Promise<void> {
     await pullIncremental('consola_reportes', mergeReportes)
     if (colaVacia) setStatus({ ultimaSync: new Date().toISOString() })
   } catch (err) {
-    if (!esErrorDeRed(err)) console.error('[sync] pull falló:', err)
+    if (esRechazoDefinitivo(err)) console.error('[sync] pull falló:', err)
   }
 }
 
@@ -378,7 +414,7 @@ export async function asegurarRango(desde: string, hasta: string): Promise<void>
     if (!reg.error) await mergeRegistros(reg.data ?? [])
     if (!cie.error) await mergeCierres(cie.data ?? [])
   } catch (err) {
-    if (!esErrorDeRed(err)) console.error('[sync] asegurarRango falló:', err)
+    if (esRechazoDefinitivo(err)) console.error('[sync] asegurarRango falló:', err)
   }
 }
 

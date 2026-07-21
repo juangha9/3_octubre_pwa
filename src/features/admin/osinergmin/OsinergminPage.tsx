@@ -49,6 +49,32 @@ function tiempoRelativo(iso: string, ahora: Date): string {
   return `hace ${Math.round(h / 24)} d`
 }
 
+/**
+ * Etiqueta de procedencia del ranking. Visible a propósito: de estos datos
+ * salen decisiones de precio, y nadie debería fijar un precio sobre datos de
+ * respaldo (más viejos) sin saberlo.
+ */
+function EtiquetaFuente({ fuente }: { fuente: OsinergminSnapshot['fuente'] }) {
+  if (fuente === 'facilito') {
+    return (
+      <span className="rounded border border-success-dark bg-success px-1.5 py-0.5 text-[11px] font-semibold text-success-text">
+        ● En vivo
+      </span>
+    )
+  }
+  if (fuente === 'excel') {
+    return (
+      <span
+        title="La fuente en vivo no estuvo disponible; se muestra el Excel de respaldo (puede ir hasta ~18 h por detrás)."
+        className="rounded border border-warning-dark bg-warning px-1.5 py-0.5 text-[11px] font-semibold text-warning-text"
+      >
+        ● Respaldo (Excel)
+      </span>
+    )
+  }
+  return null
+}
+
 function rankingDe(snap: OsinergminSnapshot, code: string): number | null {
   if (code === 'DB5') return snap.ranking_db5
   if (code === 'REGULAR') return snap.ranking_regular
@@ -703,16 +729,30 @@ export default function OsinergminPage() {
       // fecha, que desempata). No invalidan el ranking, pero deben verse: un
       // cambio de cabecera silencioso ya degradó el desempate una vez.
       const avisos: string[] = data.avisos ?? []
+      // La zona puede venir sin provincia/departamento (Facilito solo trae el
+      // distrito): se arma sin dejar comas colgantes.
+      const zonaTxt = [data.distrito, data.provincia, data.departamento].filter(Boolean).join(', ')
+      const via = data.fuente === 'excel' ? ' (vía Excel de respaldo)' : ''
       const base = data.skipped
-        ? `Revisado: sin cambios en ${data.distrito}.`
-        : `Actualizado. ${data.distrito}, ${data.provincia} · ${data.total_establecimientos} establecimientos.`
+        ? `Revisado: sin cambios en ${zonaTxt || 'la zona'}${via}.`
+        : `Actualizado${via}. ${zonaTxt} · ${data.total_establecimientos} establecimientos.`
       setResult({
         ok: avisos.length === 0,
         msg: avisos.length > 0 ? `${base} Ojo: ${avisos.join(' ')}` : base,
       })
       cargar()
     } catch (e) {
-      setResult({ ok: false, msg: (e as Error).message })
+      // Si el navegador no pudo ni invocar la función (sin internet), no se
+      // toca la tabla: se conserva la última consulta y se avisa. Un rechazo
+      // real del servidor (Facilito y Excel caídos) sí muestra el motivo.
+      const msg = (e as Error).message
+      const sinConexion = /fetch|network|failed to|load failed/i.test(msg)
+      setResult({
+        ok: false,
+        msg: sinConexion
+          ? 'Sin conexión: no se pudo actualizar. Se muestra la última consulta guardada.'
+          : msg,
+      })
     }
     setRunning(false)
   }
@@ -777,6 +817,7 @@ export default function OsinergminPage() {
           )}
         </h2>
         <div className="flex items-center gap-3">
+          <EtiquetaFuente fuente={actual.fuente} />
           <span className="text-xs text-app-muted">
             {actual.total_establecimientos} establecimientos ·{' '}
             {new Date(actual.fecha_consulta).toLocaleString('es-PE')}{' '}
@@ -795,10 +836,11 @@ export default function OsinergminPage() {
           error de la app y no lo es. Facilito no se puede consultar desde el
           servidor: su buscador exige un token de reCAPTCHA v3. */}
       <p className="mb-4 text-xs text-app-muted">
-        Fuente: <span className="text-app-text">Excel oficial «Últimos Precios Registrados — EVPC»</span> de
-        OSINERGMIN (SCOP), el único canal que publican para consulta automática. La web de OSINERGMIN
-        consulta una base viva y puede mostrar algún grifo que aún no está en ese Excel; si ves una
-        diferencia, es eso y no un fallo del cálculo.
+        Fuente oficial: <span className="text-app-text">la web en vivo de OSINERGMIN (Facilito)</span>,
+        que refleja los precios en cuanto se declaran. Si esa fuente no está disponible, se cae
+        automáticamente al <span className="text-app-text">Excel «Últimos Precios Registrados — EVPC»</span>,
+        un volcado ~diario que puede ir hasta ~18 h por detrás — cuando eso ocurre, la etiqueta de arriba
+        lo indica («Respaldo»).
       </p>
 
       {/* Tarjetas de posición actual */}

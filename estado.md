@@ -7,7 +7,7 @@ metadata:
   originSessionId: 2846fb7a-3ed9-41a7-bca2-7b57da65d443
 ---
 
-Última actualización: **2026-07-19** (**FASE 3 + OCR LOCAL CONSTRUIDOS Y CALIBRADOS** contra reportes reales: los 2 screenshots de consola del día se pegan con Ctrl+V en Ventas, Tesseract los lee en el navegador —2.4 s— y de ahí sale el TOTAL CONSOLA del día. Migraciones **017, 018 y 019 aplicadas y verificadas en vivo**. Ver sección 2026-07-19)
+Última actualización: **2026-07-20** (**FACILITO EN VIVO = fuente oficial del ranking OSINERGMIN** —Excel de respaldo—, desplegado y verificado; migr. **020 aplicada**. + fix de imágenes de consola cross-máquina + ajuste del semáforo de sync. Ver sección 2026-07-20. Antes, el **2026-07-19**: FASE 3 + OCR LOCAL de reportes de consola, migr. 017/018/019.)
 
 ## Módulos completados
 
@@ -470,6 +470,17 @@ Plan: `PLAN-cuadre-consola-y-localfirst.md` (§2-bis recoge las decisiones revis
 - **Fase 5**: comparar el stock de consola contra varillaje (los datos ya se guardan).
 - **Arreglar el guard NULL de `fn_guardar_compra`** (usar la 012 como base).
 - **Limitación conocida**: el OCR **no tolera imágenes giradas o inclinadas** — el diseño asume filas y columnas alineadas con los ejes.
+
+## Cambios de esta sesión (2026-07-20) — Facilito = fuente oficial + fixes
+
+- **FACILITO EN VIVO es la fuente OFICIAL del ranking** (antes lo era el Excel EVPC, ~18 h de latencia). El Excel queda como **respaldo automático**. Desplegado y verificado en vivo: el ranking sale con etiqueta **"● En vivo"** y cuadra con OSINERGMIN. Migración **020 aplicada** (columna `fuente` en `osinergmin_snapshots` + 4 claves `app_config`: zona INEI de Facilito + `osinergmin_codigo_establecimiento`=21728).
+  - `osinergmin-cron` reestructurada: intenta Facilito → si falla/incompleto (0 filas o no aparece nuestro código) cae al Excel (por RUC) → si ambos fallan, no escribe (front conserva lo último). Cada snapshot marca su `fuente`; el dedup la incluye en la huella (cambio de fuente ⇒ snapshot nuevo). La lógica de Facilito se portó del spike; se conservó intacta la del Excel. **Regex `ROW` de Facilito NO se tocó** (validado); el nombre del distrito se saca aparte con `TH_DISTRITO` para no arriesgar la captura de filas.
+  - `osinergmin-spike` NO se eliminó: queda como **diagnóstico permanente solo-superadmin** (compara "en vivo ahora" vs "último snapshot publicado"). Lee zona/código de `app_config` (mismas claves que el cron, para no divergir).
+  - Front: etiqueta de fuente/frescura (`EtiquetaFuente`), párrafo de procedencia reescrito, y aviso "sin conexión: se muestra la última consulta" cuando el botón manual no puede invocar la función (la tabla NO se vacía).
+  - ⚠️ Deno no está instalado localmente → las 2 Edge Functions se revisaron a mano, no con `deno check`. El front sí pasa `tsc -b`+build+lint.
+  - **Deploy (PowerShell, por sesión)**: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force` · `$env:SUPABASE_ACCESS_TOKEN="sbp_…"` · `npx supabase functions deploy <osinergmin-cron|osinergmin-spike> --project-ref acvavpzdeichdvsgblcn --no-verify-jwt` (una vez por función). `CRON_SECRET` ya está puesto, no se re-toca.
+- **FIX imágenes de Reportes de Consola cross-máquina**: la miniatura vive en Dexie (`imagenes`), LOCAL a cada navegador. Al sincronizar llega la fila (se ve la suma) pero NO el blob → cada máquina veía solo lo que pegó ella. Nueva `asegurarImagenLocal(fecha, tipo, imagen_path)` en `repo.ts`: si falta el blob y hay ruta en Storage, lo descarga y cachea (bucket privado, política SELECT admin+). `ConsolaPanel` la dispara en un `useEffect` sobre `reportes`; al cachear, el `useLiveQuery` muestra la miniatura. Descarga **perezosa** (solo el día que se abre), no precarga masiva.
+- **Ajuste local-first (zona gris de errores)**: `esErrorDeRed` → **`esRechazoDefinitivo`** en `sync.ts`. Ahora clasifica por el **código real** del error, no por el texto: rojo (rechazo definitivo) solo si SQLSTATE 22/23/28/42/P0 o HTTP 4xx; ámbar (reintentable) para sin-internet, **Supabase 5xx** y timeouts. Antes un 5xx podía pintar rojo injustificado durante una caída de Supabase. El `throw new Error(error.message)` se cambió por `comoError()` que preserva `code`/`status`. 17 casos probados. No cambia el motor (datos/cola/pull idénticos), solo el color del semáforo.
 
 ## Correcciones de arquitectura importantes (histórico)
 - **AuthContext** (`src/features/auth/AuthContext.tsx`) — contexto de auth compartido. `useAuth.ts` re-exporta desde él. `main.tsx` envuelve con `<AuthProvider>`. Evita múltiples instancias de `useAuth` con race conditions.
